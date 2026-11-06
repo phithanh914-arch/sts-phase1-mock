@@ -1,0 +1,35 @@
+# Render Blueprint（無料枠）。Render上で「New > Blueprint」からこのリポジトリを選ぶと作成される。
+# 秘密値（APP_PASSWORD / OPENAI_API_KEY / BRAIN_MODEL）はRenderの画面で入力する（リポジトリには入れない）。
+services:
+  - type: web
+    name: sts-phase1-mock
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22.12.0"
+      - key: APP_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: BRAIN_MODEL
+        sync: false
+      - key: LIVE_MODEL
+        value: gpt-live-1
+      - key: LIVE_VOICE
+        value: marin
+      - key: LIVE_MAX_SESSION_SECONDS
+        value: "600"
+      - key: LIVE_MAX_CONCURRENT
+        value: "1"
+      - key: LIVE_MAX_SESSIONS_PER_DAY
+        value: "30"

@@ -1,0 +1,57 @@
+# 設計判断の記録
+
+作成：2026-11-06。状態はすべて「モックとしての判断」。本番方針ではない。
+
+## D1. GPT-Liveの接続方式：WebRTC＋サーバsideband＋client delegation
+- 確認した公式情報（2026-11-06、openai npm 7.53.0の型定義と公式ガイド）
+  - モデルID `gpt-live-1`。WebRTCは `POST /v1/live/sessions`（SDK `client.live.create`）でサーバがSDPを交換。エフェメラルキー方式はGPT-Liveのガイドに記載なし。
+  - sideband：`wss://api.openai.com/v1/live/sessions/{id}/attach`（SDK `SidebandWS`）。
+  - client delegation：`session.delegation.created` は委任の通知であり、ユーザー発話のテキストもターン完了も含まない。結果は `session.thinking.append` / `session.commentary.append` / `session.instructions.append`（各500 tokens上限、`delegation_id`必須・nullable）。
+  - transcript：`session.input_transcript.delta` / `session.output_transcript.delta`（start_ms/end_ms）。確定ターン完了イベントはない。
+- 判断：業務状態はサーバが単独で持つため、transcript受信と指示送信はsideband（サーバ）で行う。ブラウザは音声とミュート/終了のみ。
+- Realtime API（`/v1/realtime/calls` 等）のイベントとは別物として `server/src/live/liveAdapter.ts` に隔離。
+
+## D2. 委任されていない分析結果は「話させない」
+- transcriptのgapでも分析を走らせ、事実と状態を最新化する（委任を待つと状態更新が遅れるため）。
+- ただし委任されていないときの通常の質問案は `thinking`（無音の背景情報）として渡し、GPT-Liveの自発発話と二重にならないようにする。
+- 例外：読上げ確認・転送・緊急・登録結果など、ゲート済みで文言が決まっている案内は `instructions.append` で「そのまま伝える」よう指示する。
+- 要検証：instructionsで文言どおりに話すか、言い換えや省略が起きるか（[S4] 事後監視だけでは発話を物理的に防げない）。
+
+## D3. 読上げ確認の「出力済み」判定はヒューリスティック
+- テキストモード：表示時点で出力済み。
+- 音声モード：読上げ指示の受理（`session.instructions.appended`）後のAI出力transcriptが読上げ文の50%以上の長さで「確認」を含む場合に出力済みとする。**要検証**。
+- 出力済みでなければ「はい」を同意として記録しない（ActionGate）。
+
+## D4. 振り分けと権限はコード、会話の順序はLLM
+- `decideRoute`（コード）：緊急 > レッカー > 有人希望 > 明確な非対象 > 未確認 > 対象。未確認をfalseにしない。
+- `ActionGate`（コード）：確認準備・同意記録・登録提出・完了案内・契約開示。
+- LLM Brainは次の会話目的と発話案を選ぶ。コードは不足項目の集合と制約だけを渡し、固定の next_field を返さない。
+- 自動完結の事案種別は allowlist（`collision` のみ）。当て逃げ・故障・盗難等は対象外。
+
+## D5. Deterministic比較モード（RuleBrain）を併設
+- 既存リポジトリがなく「既存Deterministicモード」は存在しなかったため、比較用・APIなし回帰テスト用に新設。
+- これは固定順の質問をする（＝過去モックのIVR的方式に相当）。LLM方式との比較対象として残す。
+- キーワード規則のため、自由な言い換えへの頑健性はない。業務ロジック（ゲート・状態遷移）のテストに使う。
+
+## D6. 世代管理と後着結果
+- 分析は会話ごとに直列化。各分析に `analysisId`・`baseStateVersion`・`inputWatermark` を付与。
+- 適用時に版が変わっていれば破棄して再評価。タイムアウト後に届いた結果は `late_discarded` として記録のみ。
+- 事実が変わると版を上げ、未同意の確認は失効。同意後の変更・QUEUEDジョブは取消して再確認。RUNNINGは停止要求→書込前停止なら再確認、書込済みなら訂正待ち（有人）。2件目の新規登録はしない。
+
+## D7. RPA・基幹は模擬、形式はモック独自
+- `mock-rpa-v0.1`。既存RPAの入力形式ではない。Mapperはコードで行い、LLMに列や形式を決めさせない。
+- 冪等性：ジョブ台帳（同一idempotency_key）と模擬基幹台帳の両方で重複排除。Exactly-onceは保証しない。
+- OUTCOME_UNKNOWN は自動再送しない。画面の「基幹台帳を照合」で同一キーの登録を回収。
+
+## D8. 契約照会
+- 架空契約2件。「2項目一致」は契約特定の基準として扱い、本人認証・開示許可とは別。モックは本人認証を実装せず、開示は常に不可。
+- 契約未特定で事故概要が揃った場合は HANDOFF_PENDING → 有人引継ぎ（登録完了とは言わない）。
+
+## D9. ホスティング：Render無料枠（Takaさん選択 2026-11-06）
+- 常駐Nodeプロセス（SSE・模擬Worker・sideband WebSocket）が必要なためサーバレスではなくWebサービス。
+- 外部公開のため `APP_PASSWORD` 必須（production で未設定なら起動拒否）。署名付きHttpOnly Cookie、ログイン試行のレート制限。
+- 費用・負荷の上限：1通話の最大秒数、同時接続数、1日のセッション数、LLM評価の最大回数。
+
+## D10. 未実装（要件にあるが根拠資料が未取得のもの）
+- 免許確認・22時〜5時の飲酒確認・警察届出等の条件付き項目：正式ルール未取得のため実装しない（LLMで補わない）。
+- 本人認証、実SMS、Genesys転送、実RPA/基幹。

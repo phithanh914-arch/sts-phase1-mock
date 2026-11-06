@@ -1,0 +1,41 @@
+{
+  "notice": "MOCK独自形式。既存RPAの正式仕様ではない。",
+  "job_id": "MOCK-JOB-0001",
+  "claim_id": "MOCK-CLAIM-0001",
+  "conversation_id": "MOCK-CONV-0001",
+  "source_version": 7,
+  "schema_version": "mock-rpa-v0.1",
+  "mapping_version": "mock-mapping-v0.1",
+  "idempotency_key": "MOCK-CLAIM-0001:registration:v7",
+  "confirmation_id": "MOCK-CONFIRMATION-0001",
+  "payload_hash": "e63a7abe83d695dc55dd369fa3b368f049ca4a33bd8e9b35236afff1dbbc13d4",
+  "created_at": "2026-11-06T14:00:00+09:00",
+  "payload": {
+    "mock_only": true,
+    "policy_ref": "MOCK-POLICY-001",
+    "caller": {
+      "name_kana": "テスト イチロウ",
+      "callback_phone": "00000000001"
+    },
+    "accident": {
+      "occurred_date": "2026-11-06",
+      "occurred_time": "08:00",
+      "time_approximate": true,
+      "municipality": "東京都千代田区",
+      "description": "自己所有の車庫の壁に後退時接触。自車後部バンパーを擦過。"
+    },
+    "eligibility": {
+      "towing_requested": false,
+      "injuries_present": false,
+      "other_person_or_vehicle_involved": false,
+      "third_party_property_involved": false
+    },
+    "vehicle": {
+      "reference": "MOCK-VEHICLE-001",
+      "damage": "後部バンパー擦過"
+    },
+    "contact": {
+      "sms_allowed": false
+    }
+  }
+}
