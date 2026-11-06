@@ -39,6 +39,11 @@ interface LiveRuntime {
   maxTimer?: NodeJS.Timeout;
   seq: number;
   closed: boolean;
+  /** 「そのまま伝えて」指示を送ってから、その発話が終わる（出力transcriptが区切れる）までの間 true */
+  exactSpeaking: boolean;
+  /** 話している途中に届いた委任なしの「そのまま伝えて」指示（前の発話が終わってから送る） */
+  exactQueue: { eventId: string; text: string }[];
+  exactTimer?: NodeJS.Timeout;
 }
 
 export class LiveAdapter {
@@ -89,7 +94,7 @@ export class LiveAdapter {
     const liveSessionId = res.session.id;
     conv.live.sessionId = liveSessionId;
     conv.log('live_session_created', { liveSessionId, model: this.cfg.model, voice, speed, tone, store: false });
-    const rt: LiveRuntime = { sideband: null, inBuf: { text: '' }, outBuf: { text: '' }, outstandingDelegations: [], readbackEventIds: new Map(), pendingReadback: null, seq: 0, closed: false };
+    const rt: LiveRuntime = { sideband: null, inBuf: { text: '' }, outBuf: { text: '' }, outstandingDelegations: [], readbackEventIds: new Map(), pendingReadback: null, seq: 0, closed: false, exactSpeaking: false, exactQueue: [] };
     this.runtimes.set(conv.id, rt);
     this.attach(conv, rt, liveSessionId);
     rt.maxTimer = setTimeout(() => {
@@ -233,9 +238,33 @@ export class LiveAdapter {
       rt.pendingReadback = null;
       this.ctl.aiSpoke(conv, text, 'live', tag, start, end);
       this.ctl.markReadbackDelivered(conv, pr.confirmationId);
+      this.exactDone(conv, rt);
       return;
     }
     this.ctl.aiSpoke(conv, text, 'live', tag, start, end);
+    this.exactDone(conv, rt);
+  }
+
+  /** 「そのまま伝えて」指示を送る。前の指示を話している途中なら、話し終わってから送る（発話が混ざるのを防ぐ） */
+  private sendExact(conv: Conversation, rt: LiveRuntime, eventId: string, delegationId: string | null, text: string, queueable: boolean) {
+    if (queueable && rt.exactSpeaking) {
+      rt.exactQueue.push({ eventId, text });
+      conv.log('exact_queued', { event_id: eventId });
+      return;
+    }
+    rt.exactSpeaking = true;
+    clearTimeout(rt.exactTimer);
+    // 出力transcriptが来ない場合の保険（話し終わりを検知できなくても詰まらせない）
+    rt.exactTimer = setTimeout(() => this.exactDone(conv, rt), 10000);
+    this.send(conv, rt, { type: 'session.instructions.append', event_id: eventId, delegation_id: delegationId, content: `今すぐ、次の内容を省略せずそのまま伝えてください：「${text}」` });
+  }
+
+  private exactDone(conv: Conversation, rt: LiveRuntime) {
+    if (!rt.exactSpeaking) return;
+    rt.exactSpeaking = false;
+    clearTimeout(rt.exactTimer);
+    const next = rt.exactQueue.shift();
+    if (next && !rt.closed) this.sendExact(conv, rt, next.eventId, null, next.text, false);
   }
 
   private makeSink(): SpeechSink {
@@ -249,7 +278,8 @@ export class LiveAdapter {
         const eventId = this.eid(conv, rt, d.kind);
         if (d.kind === 'readback' && d.tag) rt.readbackEventIds.set(eventId, d.tag.replace('readback:', ''));
         if (d.exact) {
-          this.send(conv, rt, { type: 'session.instructions.append', event_id: eventId, delegation_id: delegationId, content: `今すぐ、次の内容を省略せずそのまま伝えてください：「${d.text}」` });
+          // 委任への応答と緊急案内はすぐ送る。委任なしの追加案内（転送結果など）は前の発話が終わるまで待つ
+          this.sendExact(conv, rt, eventId, delegationId, d.text, !delegationId && d.kind !== 'emergency');
         } else if (delegationId || solicited) {
           this.send(conv, rt, { type: 'session.commentary.append', event_id: eventId, delegation_id: delegationId, content: d.text });
         } else {
@@ -279,6 +309,7 @@ export class LiveAdapter {
     rt.closed = true;
     clearTimeout(rt.maxTimer);
     clearTimeout(rt.inTimer);
+    clearTimeout(rt.exactTimer);
     this.flushIn(conv, rt);
     this.flushOut(conv, rt);
     try { rt.sideband?.close({ code: 1000, reason: 'done' }); } catch { /* ignore */ }

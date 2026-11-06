@@ -6,13 +6,15 @@ export type FactType = 'bool' | 'text' | 'enum';
 export interface FactDef {
   key: string;
   label: string;
-  category: '安全/対象' | '連絡者' | '契約/事故車' | '日時' | '場所' | '事故状況' | '運転者' | '損害' | '終了/連絡';
+  category: '安全/対象' | '相手/届出' | '連絡者' | '契約/事故車' | '日時' | '場所' | '事故状況' | '運転者' | '損害' | '終了/連絡';
   type: FactType;
   enumValues?: string[];
   /** 自動完結の対象判定に使う */
   eligibility?: boolean;
   /** 登録前に必要（captured/confirmed）。 */
   requiredForRegistration?: boolean;
+  /** 条件付き必須。counterparty：無人の駐車車両に接触（相手情報）。property_damage：公共物または駐車車両に接触（警察届出） */
+  requiredWhen?: 'counterparty' | 'property_damage';
   /** 「分からない」で登録してよい */
   unknownAllowed?: boolean;
   /** 読み上げ確認対象 */
@@ -20,7 +22,8 @@ export interface FactDef {
 }
 
 export const INCIDENT_KINDS = ['collision', 'theft', 'vandalism', 'hit_and_run', 'breakdown', 'other', 'unknown'];
-export const OWNERSHIP = ['own', 'third_party', 'none', 'unknown'];
+// public：電柱・ガードレール・標識等の公共物（D-11でSTS対象）。third_party：他人の塀・店舗の壁・借家等（有人）。
+export const OWNERSHIP = ['own', 'public', 'third_party', 'none', 'unknown'];
 
 export const CATALOG: FactDef[] = [
   // 安全/対象
@@ -32,10 +35,16 @@ export const CATALOG: FactDef[] = [
   { key: 'occupants', label: '乗車人数・同乗者', category: '安全/対象', type: 'text' },
   { key: 'all_occupants_injury_checked', label: '全乗員のけが有無を確認済み', category: '安全/対象', type: 'bool', eligibility: true },
   { key: 'other_person_or_vehicle_involved', label: '他の人・車の関与', category: '安全/対象', type: 'bool', eligibility: true },
+  { key: 'parked_vehicle_unoccupied', label: '相手車は無人の駐車車両か（人が乗っていない）', category: '安全/対象', type: 'bool', eligibility: true },
   { key: 'third_party_property_involved', label: '第三者物・公共物への接触/損傷', category: '安全/対象', type: 'bool', eligibility: true },
-  { key: 'property_ownership', label: '接触物の所有関係', category: '安全/対象', type: 'enum', enumValues: OWNERSHIP, eligibility: true },
+  { key: 'property_ownership', label: '接触物の所有関係（自己所有/公共物/他人所有/なし）', category: '安全/対象', type: 'enum', enumValues: OWNERSHIP, eligibility: true },
   { key: 'incident_kind', label: '事案種別', category: '安全/対象', type: 'enum', enumValues: INCIDENT_KINDS, eligibility: true },
   { key: 'human_requested', label: '有人対応の希望', category: '安全/対象', type: 'bool', eligibility: true },
+  // 相手/届出（D-11）。相手情報は無人の駐車車両に接触した場合のみ聴取（公共物は聞かない）。分からなければ「不明」で登録し、相手連絡要として扱う
+  { key: 'counterparty_name', label: '相手（所有者・管理者）の名前・名称', category: '相手/届出', type: 'text', requiredWhen: 'counterparty', unknownAllowed: true, readback: true },
+  { key: 'counterparty_address', label: '相手の住所', category: '相手/届出', type: 'text', requiredWhen: 'counterparty', unknownAllowed: true, readback: true },
+  { key: 'counterparty_phone', label: '相手の連絡先電話番号', category: '相手/届出', type: 'text', requiredWhen: 'counterparty', unknownAllowed: true, readback: true },
+  { key: 'police_reported', label: '警察への届出', category: '相手/届出', type: 'bool', requiredWhen: 'property_damage', unknownAllowed: true, readback: true },
   // 連絡者
   { key: 'caller_name_kana', label: '連絡者氏名（読み）', category: '連絡者', type: 'text', requiredForRegistration: true, readback: true },
   { key: 'callback_phone', label: '折返し電話番号', category: '連絡者', type: 'text', requiredForRegistration: true, readback: true },

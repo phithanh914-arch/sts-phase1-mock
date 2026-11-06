@@ -6,7 +6,8 @@ import type { Conv, Fact, Job } from './types';
 const LABEL: Record<string, string> = {
   emergency_signal: '緊急信号', unsafe_to_continue_signal: '安全上の懸念', towing_requested: 'レッカー希望', physically_drivable: '走行可否',
   injuries_present: 'けが・痛み', occupants: '乗員', all_occupants_injury_checked: '全乗員のけが確認', other_person_or_vehicle_involved: '他の人・車の関与',
-  third_party_property_involved: '第三者物への接触', property_ownership: '接触物の所有', incident_kind: '事案種別', human_requested: '有人希望',
+  parked_vehicle_unoccupied: '相手車は無人の駐車車両か', third_party_property_involved: '物への接触', property_ownership: '接触物の所有（自己/公共物/他人）',
+  counterparty_name: '相手の名前', counterparty_address: '相手の住所', counterparty_phone: '相手の電話番号', police_reported: '警察への届出', incident_kind: '事案種別', human_requested: '有人希望',
   caller_name_kana: '連絡者氏名(読み)', callback_phone: '折返し電話', caller_is_policyholder: '契約者本人か', policy_number: '証券番号', vehicle_plate: '登録番号',
   accident_date: '事故日', accident_time: '時刻', time_approximate: '概算', municipality: '場所(市区郡)', location_detail: '場所詳細', accident_description: '事故状況',
   driver: '運転者', damage: '損傷', repair_shop: '修理先', sms_allowed: 'SMS可否', policy_match: '契約特定(2項目一致)',

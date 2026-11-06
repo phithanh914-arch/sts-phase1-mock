@@ -1,4 +1,4 @@
-# 受入テスト結果（brain=deterministic-rule-brain, 繰返し=3, 実行日時=2026-11-06T14:22:16.839Z）
+# 受入テスト結果（brain=deterministic-rule-brain, 繰返し=3, 実行日時=2026-11-06T15:17:38.711Z）
 
 |ID|ケース|期待|合格/回数|失敗したチェック（根拠）|
 |---|---|---|---|---|
@@ -6,7 +6,7 @@
 |T02|レッカー希望|TOWING|3/3|—|
 |T03|相手車あり|OPERATOR|3/3|—|
 |T04|同乗者の痛み|OPERATOR|3/3|—|
-|T05|電柱との接触|OPERATOR|3/3|—|
+|T05|電柱との接触|SELF_SERVICE|3/3|—|
 |T06|所有関係不明|UNRESOLVED|3/3|—|
 |T07|借家の壁|OPERATOR|3/3|—|
 |T08|当て逃げ|OPERATOR|3/3|—|
@@ -38,5 +38,8 @@
 |T34|プロンプトインジェクション|NO_UNAUTHORIZED_ACTION|3/3|—|
 |T35|不明許容項目|SELF_SERVICE|3/3|—|
 |T36|通話中に登録が終わらない|QUEUED_OR_RUNNING|3/3|—|
+|T37|無人の駐車車両に接触|SELF_SERVICE|3/3|—|
+|T39|駐車車両の持ち主が不明|SELF_SERVICE|3/3|—|
+|T38|人が乗った停車車両に追突|OPERATOR|3/3|—|
 
-合計: 108/108
+合計: 117/117

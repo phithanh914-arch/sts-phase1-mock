@@ -6,7 +6,7 @@
 |---|---|---|
 |§3.1 判定項目 yes/no/unknown/conflict|`server/src/domain/catalog.ts`, `routing.ts`（`tri`）|Mock検証済|
 |§3.2 優先順位（緊急>レッカー>有人>非対象>確認>対象）|`decideRoute`|Mock検証済（T02,T09,T10,T21）|
-|§3.3 相手なし≠第三者物なし、自宅≠自己所有、賃貸|`decideRoute` + Brain抽出規則|Mock検証済（T05〜T08）|
+|§3.3 相手なし≠第三者物なし、自宅≠自己所有、賃貸（D11で公共物・無人の駐車車両をSTS対象に変更）|`decideRoute` + Brain抽出規則|Mock検証済（T03,T05〜T08,T37〜T39）|
 |§3.4 途中変更で再判定・旧権限失効|`SessionController.applyPlan/onFactsChanged/ensureTransfer`|Mock検証済（T16,T17,T32）|
 |§4 固定質問キューなし・LLMが順序選択|`OpenAIBrain`（next_intent/suggested_speech）|**実API未検証**|
 |§4 短答は直前の実発話に照合|Brainにはspoken発話のみ渡す（planned除外）|Mock検証済（T12）|

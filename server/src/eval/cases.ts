@@ -64,8 +64,12 @@ export const CASES: CaseDef[] = [
     async run(mk) {
       const h = mk();
       await h.say('車は走れます。レッカーはいりませんが、相手の車にぶつかりました。');
+      // 2026-11-06 方針変更（D-11）：無人の駐車車両はSTS対象のため、相手車に人が乗っていたかを確認する（けがの確認が先でもよい）
+      if (/おけが|痛み/.test(h.lastAi())) await h.say('乗っていたのは私だけで、けがはありません。');
+      const askedOccupied = h.lastAi();
+      await h.say('はい、相手の方が乗っていました。');
       const pk = h.conv.transfer?.package.captured_facts as Record<string, unknown> | undefined;
-      return [route(h, 'OPERATOR'), c('自動完結候補に入れない', h.conv.receptionState === 'NOT_ELIGIBLE', h.conv.receptionState), c('既聴取情報を引き継ぐ', !!pk && 'towing_requested' in pk && 'physically_drivable' in pk, Object.keys(pk ?? {})), noJob(h)];
+      return [c('相手車に人が乗っていたかを確認', /人は乗って/.test(askedOccupied), askedOccupied), route(h, 'OPERATOR'), c('自動完結候補に入れない', h.conv.receptionState === 'NOT_ELIGIBLE', h.conv.receptionState), c('既聴取情報を引き継ぐ', !!pk && 'towing_requested' in pk && 'physically_drivable' in pk, Object.keys(pk ?? {})), noJob(h)];
     },
   },
   {
@@ -77,11 +81,28 @@ export const CASES: CaseDef[] = [
     },
   },
   {
-    id: 'T05', title: '電柱との接触', expected: 'OPERATOR',
+    // 2026-11-06 方針変更（D-11）：公共物との接触はSTS対象。相手情報は聞かず、警察届出だけ聴取する
+    id: 'T05', title: '電柱との接触', expected: 'SELF_SERVICE',
     async run(mk) {
       const h = mk();
-      await h.say('相手はいません。電柱にぶつかりました。けがはなくレッカーも不要です。');
-      return [route(h, 'OPERATOR'), c('第三者物として扱う', h.fact('third_party_property_involved').value === true, h.fact('third_party_property_involved').value), noJob(h)];
+      await h.say('相手はいません。乗っていたのは私だけです。電柱にぶつかりました。けがはなくレッカーも不要です。');
+      const r1 = route(h, 'SELF_SERVICE');
+      await h.say('今朝8時ごろです。前のバンパーがへこみました。');
+      await h.say(SCRIPT.restInfo);
+      const askedPolice = h.lastAi();
+      await h.say('はい、届け出ました。');
+      const ready = h.conv.receptionState === 'READY_FOR_CONFIRMATION';
+      const readback = h.lastAi();
+      await h.say('はい、間違いありません。');
+      await h.waitFor(() => h.conv.registrationState === 'REGISTERED', 4000);
+      const p = h.conv.activeJob()?.job.payload as { counterparty?: unknown; property_damage?: { owner_type?: string; police_reported?: boolean } } | undefined;
+      return [
+        r1,
+        c('公共物として扱う', h.fact('third_party_property_involved').value === true && h.fact('property_ownership').value === 'public', h.fact('property_ownership').value),
+        c('相手情報は聞かず警察届出を聞く', /警察/.test(askedPolice) && !h.aiTexts().some((t) => /持ち主/.test(t)), askedPolice),
+        c('最終確認に警察届出を含め、相手情報は含めない', ready && /警察への届出：届出済み/.test(readback) && !/相手のお名前/.test(readback), readback),
+        c('登録データに物損情報', h.conv.registrationState === 'REGISTERED' && p?.counterparty === null && p?.property_damage?.owner_type === 'public' && p?.property_damage?.police_reported === true, { state: h.conv.registrationState, p: p && { cp: p.counterparty, pd: p.property_damage } }),
+      ];
     },
   },
   {
@@ -397,6 +418,65 @@ export const CASES: CaseDef[] = [
       await toConfirmed(h);
       await h.sleep(800);
       return [c('QUEUED/RUNNINGのまま', ['QUEUED', 'RUNNING'].includes(h.conv.registrationState), h.conv.registrationState), c('処理中と案内', h.aiTexts().some((t) => /処理中/.test(t)), h.lastAi()), c('完了に数えない', !h.aiTexts().some((t) => /登録が完了しました/.test(t)), '')];
+    },
+  },
+  {
+    // 2026-11-06 方針変更（D-11）で追加
+    id: 'T37', title: '無人の駐車車両に接触', expected: 'SELF_SERVICE',
+    async run(mk) {
+      const h = mk();
+      await h.say('レッカーはいりません。乗っていたのは私だけで、けがはありません。駐車場で止めてあった車にぶつけました。');
+      const asked = h.lastAi();
+      await h.say('いいえ、誰も乗っていませんでした。');
+      const r1 = route(h, 'SELF_SERVICE');
+      await h.say('今朝8時ごろです。前のバンパーを擦りました。');
+      await h.say(SCRIPT.restInfo);
+      await h.say('サトウ ハナコさんです。');
+      await h.say('東京都千代田区一番町1です。');
+      await h.say('09011112222です。');
+      await h.say('いいえ、まだです。');
+      const readback = h.lastAi();
+      await h.say('はい、間違いありません。');
+      await h.waitFor(() => h.conv.registrationState === 'REGISTERED', 4000);
+      const p = h.conv.activeJob()?.job.payload as { counterparty?: { name?: string; phone?: string; info_incomplete?: boolean }; property_damage?: { police_reported?: boolean } } | undefined;
+      const cp = p?.counterparty;
+      return [
+        c('相手車に人が乗っていたかを確認', /人は乗って/.test(asked), asked),
+        r1,
+        c('相手の電話番号を連絡者の番号にしない', h.fact('callback_phone').value === '00000000001' && h.fact('counterparty_phone').value === '09011112222', { cb: h.fact('callback_phone').value, cp: h.fact('counterparty_phone').value }),
+        c('最終確認に相手情報を含める', /相手のお名前：サトウハナコさん|相手のお名前：サトウ/.test(readback) && /警察への届出：まだ届け出ていない/.test(readback), readback),
+        c('登録データに相手情報', h.conv.registrationState === 'REGISTERED' && cp?.phone === '09011112222' && p?.property_damage?.police_reported === false && cp?.info_incomplete === false, { state: h.conv.registrationState, cp }),
+      ];
+    },
+  },
+  {
+    id: 'T39', title: '駐車車両の持ち主が不明', expected: 'SELF_SERVICE',
+    async run(mk) {
+      const h = mk();
+      await h.say('レッカーはいりません。乗っていたのは私だけで、けがはありません。駐車場で止めてあった車にぶつけました。誰も乗っていませんでした。今朝8時ごろです。前のバンパーを擦りました。');
+      await h.say(SCRIPT.restInfo);
+      const asked = h.lastAi();
+      await h.say('分かりません。');
+      await h.say('分かりません。');
+      await h.say('分かりません。');
+      await h.say('分かりません。');
+      const ready = h.conv.receptionState === 'READY_FOR_CONFIRMATION';
+      await h.say('はい、間違いありません。');
+      await h.waitFor(() => h.conv.registrationState === 'REGISTERED', 4000);
+      const cp = (h.conv.activeJob()?.job.payload as { counterparty?: { contact_required?: boolean; info_incomplete?: boolean } } | undefined)?.counterparty;
+      return [
+        c('相手の持ち主を聞く', /車の持ち主/.test(asked), asked),
+        c('「分からない」で先へ進み最終確認に到達', ready, h.conv.receptionState),
+        c('相手連絡要・情報不足の印を付けて登録', h.conv.registrationState === 'REGISTERED' && cp?.contact_required === true && cp?.info_incomplete === true, { state: h.conv.registrationState, cp }),
+      ];
+    },
+  },
+  {
+    id: 'T38', title: '人が乗った停車車両に追突', expected: 'OPERATOR',
+    async run(mk) {
+      const h = mk();
+      await h.say('レッカーはいりません。けがはありません。信号待ちで止まっていた車に追突しました。');
+      return [route(h, 'OPERATOR'), c('有人の相手車はSTS対象外', h.fact('parked_vehicle_unoccupied').value === false, h.fact('parked_vehicle_unoccupied').value), noJob(h)];
     },
   },
 ];
