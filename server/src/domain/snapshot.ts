@@ -37,6 +37,7 @@ function show(key: string, s: ClaimSnapshot): string {
   if (x.status === 'explicitly_unknown') return '不明';
   if (typeof x.value === 'boolean') {
     if (key === 'sms_allowed') return x.value ? 'SMS送信可' : 'SMS送信不可';
+    if (key === 'police_reported') return x.value ? '届出済み' : 'まだ届け出ていない';
     return x.value ? 'はい' : 'いいえ';
   }
   return String(x.value);
@@ -44,7 +45,8 @@ function show(key: string, s: ClaimSnapshot): string {
 
 /** 顧客への最終内容確認の読上げ文。コードで生成し、確認対象スナップショットと1対1に結び付ける。 */
 export function buildReadback(s: ClaimSnapshot): string {
-  const items = CATALOG.filter((d) => d.readback).map((d) => {
+  // 相手情報・警察届出は、相手がある事故（スナップショットに含まれる場合）だけ読み上げる
+  const items = CATALOG.filter((d) => d.readback && (!d.requiredWhen || s.facts[d.key])).map((d) => {
     if (d.key === 'accident_time') {
       const approx = s.facts.time_approximate?.value === true ? 'ごろ' : '';
       return `時刻：${show(d.key, s)}${approx}`;
@@ -64,6 +66,10 @@ function shortLabel(key: string): string {
     driver: '運転者',
     damage: '損傷',
     sms_allowed: 'SMS',
+    counterparty_name: '相手のお名前',
+    counterparty_address: '相手のご住所',
+    counterparty_phone: '相手のご連絡先',
+    police_reported: '警察への届出',
   };
   return map[key] ?? CATALOG_BY_KEY[key]?.label ?? key;
 }
@@ -123,7 +129,19 @@ export function mapToRpaPayload(s: ClaimSnapshot): MapResult {
       injuries_present: bool('injuries_present'),
       other_person_or_vehicle_involved: bool('other_person_or_vehicle_involved'),
       third_party_property_involved: bool('third_party_property_involved'),
+      parked_vehicle_unoccupied: bool('parked_vehicle_unoccupied'),
     },
+    // 物損（公共物・無人の駐車車両）。相手情報に不明があれば、担当が相手確認を行う前提の印を付ける（公共物は相手情報を聞かない）
+    counterparty: s.facts.counterparty_name || s.facts.counterparty_address || s.facts.counterparty_phone
+      ? {
+          contact_required: true,
+          name: str('counterparty_name', false),
+          address: str('counterparty_address', false),
+          phone: str('counterparty_phone', false),
+          info_incomplete: ['counterparty_name', 'counterparty_address', 'counterparty_phone'].some((k) => !s.facts[k] || s.facts[k].status === 'explicitly_unknown'),
+        }
+      : null,
+    property_damage: s.facts.police_reported ? { owner_type: s.facts.property_ownership?.value ?? null, police_reported: bool('police_reported') } : null,
     driver: str('driver'),
     vehicle: { plate: str('vehicle_plate', false), damage: str('damage') },
     repair_shop: str('repair_shop', false),

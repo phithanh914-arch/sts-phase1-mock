@@ -38,6 +38,7 @@ export function decideRoute(facts: Record<string, Fact>, opts: { clarifyAttempts
   const allChecked = tri(facts.all_occupants_injury_checked);
   const other = tri(facts.other_person_or_vehicle_involved);
   const third = tri(facts.third_party_property_involved);
+  const parked = tri(facts.parked_vehicle_unoccupied);
   const ownership = enumVal(facts.property_ownership);
   const kind = enumVal(facts.incident_kind);
 
@@ -62,8 +63,11 @@ export function decideRoute(facts: Record<string, Fact>, opts: { clarifyAttempts
   }
   // 3. 明確な非対象
   if (injuries === 'yes') { reasons.push('けが・痛みあり'); safetyFlags.push('INJURY'); }
-  if (other === 'yes') reasons.push('他の人・車の関与あり');
-  if (third === 'yes' || ownership === 'third_party') reasons.push('第三者物・公共物への接触');
+  // 2026-11-06 方針変更（docs/decisions.md D-11）：公共物（電柱・ガードレール・標識等）と無人の駐車車両への接触は
+  // 緊急性の低い物損としてSTS対象（警察届出を聴取。駐車車両は相手情報も聴取）。
+  // 走行中・人が乗った相手車、歩行者・自転車、他人の塀・店舗の壁・借家、当て逃げは有人のまま。
+  if (other === 'yes' && parked === 'no') reasons.push('他の人・走行中または人が乗った車の関与あり');
+  if (ownership === 'third_party') reasons.push('他人の所有物（塀・壁等）への接触');
   if (NON_ELIGIBLE_KINDS.has(kind)) reasons.push(`自動完結対象外の事案種別: ${kind}`);
   if (reasons.length > 0) return { route: 'OPERATOR', reasons, unresolved, safetyFlags };
 
@@ -71,9 +75,13 @@ export function decideRoute(facts: Record<string, Fact>, opts: { clarifyAttempts
   if (towing !== 'no') unresolved.push('towing_requested');
   if (injuries !== 'no') unresolved.push('injuries_present');
   if (allChecked !== 'yes' && (injuries === 'no' || allChecked === 'no')) unresolved.push('all_occupants_injury_checked');
-  if (other !== 'no') unresolved.push('other_person_or_vehicle_involved');
-  if (third !== 'no') unresolved.push('third_party_property_involved');
-  if (!(ownership === 'own' || ownership === 'none')) unresolved.push('property_ownership');
+  if (other === 'yes' && parked !== 'yes') unresolved.push('parked_vehicle_unoccupied');
+  else if (other !== 'yes' && other !== 'no') unresolved.push('other_person_or_vehicle_involved');
+  const parkedOnly = other === 'yes' && parked === 'yes';
+  // 無人の駐車車両に接触した場合、相手は車なので「物」の確認は不要（物にも当たったと申告されれば下で判定する）
+  if (third !== 'no' && third !== 'yes' && !parkedOnly) unresolved.push('third_party_property_involved');
+  // 接触物が公共物か他人の物か自己所有かで対象が変わるため、不明なら確認する（「家の塀」だけで自己所有と推測しない）
+  if (third === 'yes' ? ownership !== 'public' : !(ownership === 'own' || ownership === 'none' || parkedOnly)) unresolved.push('property_ownership');
   if (!SELF_SERVICE_KINDS.has(kind)) unresolved.push('incident_kind');
   if (tri(facts.unsafe_to_continue_signal) === 'conflict') unresolved.push('unsafe_to_continue_signal');
 
@@ -84,5 +92,11 @@ export function decideRoute(facts: Record<string, Fact>, opts: { clarifyAttempts
     return { route: 'UNRESOLVED', reasons: ['対象条件が未確認'], unresolved, safetyFlags };
   }
   // 5. 対象条件を確認できた事案のみ
-  return { route: 'SELF_SERVICE', reasons: ['レッカー不要・けがなし（全員）・相手人車なし・第三者物なし・自己所有物/単独'], unresolved, safetyFlags };
+  const cp = third === 'yes' || ownership === 'public' || (other === 'yes' && parked === 'yes');
+  return {
+    route: 'SELF_SERVICE',
+    reasons: [cp ? 'レッカー不要・けがなし（全員）・接触物は公共物/無人の駐車車両（警察届出、駐車車両は相手情報も聴取）' : 'レッカー不要・けがなし（全員）・相手人車なし・自己所有物/単独'],
+    unresolved,
+    safetyFlags,
+  };
 }

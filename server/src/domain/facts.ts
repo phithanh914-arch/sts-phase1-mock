@@ -90,11 +90,32 @@ export function factsForPrompt(facts: Record<string, Fact>): Record<string, { va
   return out;
 }
 
+const yes = (f: Fact | undefined) => !!f && (f.status === 'captured' || f.status === 'confirmed') && f.value === true;
+
+/** 無人の駐車車両に接触した事故か（相手の名前・住所・連絡先を聴取する） */
+export function counterpartyInvolved(facts: Record<string, Fact>): boolean {
+  return yes(facts.other_person_or_vehicle_involved) && yes(facts.parked_vehicle_unoccupied);
+}
+
+/** 公共物または駐車車両に接触した物損事故か（警察届出を聴取する） */
+export function propertyDamageInvolved(facts: Record<string, Fact>): boolean {
+  const own = facts.property_ownership;
+  const isPublic = !!own && (own.status === 'captured' || own.status === 'confirmed') && own.value === 'public';
+  return counterpartyInvolved(facts) || isPublic || yes(facts.third_party_property_involved);
+}
+
+export function isRequired(d: (typeof CATALOG)[number], facts: Record<string, Fact>): boolean {
+  if (d.requiredForRegistration) return true;
+  if (d.requiredWhen === 'counterparty') return counterpartyInvolved(facts);
+  if (d.requiredWhen === 'property_damage') return propertyDamageInvolved(facts);
+  return false;
+}
+
 /** 登録前必須項目のうち未充足のもの */
 export function missingForRegistration(facts: Record<string, Fact>, policyMatched: boolean): string[] {
   const missing: string[] = [];
   for (const d of CATALOG) {
-    if (!d.requiredForRegistration) continue;
+    if (!isRequired(d, facts)) continue;
     const f = facts[d.key];
     const ok = f.status === 'captured' || f.status === 'confirmed' || (f.status === 'explicitly_unknown' && d.unknownAllowed);
     if (!ok) missing.push(d.key);
@@ -105,5 +126,5 @@ export function missingForRegistration(facts: Record<string, Fact>, policyMatche
 
 /** 必須なのに「分からない」と明言され、通話中に解消できない項目 */
 export function unresolvableRequired(facts: Record<string, Fact>): string[] {
-  return CATALOG.filter((d) => d.requiredForRegistration && !d.unknownAllowed && facts[d.key].status === 'explicitly_unknown').map((d) => d.key);
+  return CATALOG.filter((d) => isRequired(d, facts) && !d.unknownAllowed && facts[d.key].status === 'explicitly_unknown').map((d) => d.key);
 }

@@ -36,8 +36,9 @@ export const QUESTION_TEXT: Record<string, string> = {
   injuries_present: '事故でおけがをされた方や、痛みのある方はいらっしゃいますか。',
   all_occupants_injury_checked: '一緒に乗っていた方も含めて、おけがや痛みのある方はいらっしゃいますか。',
   other_person_or_vehicle_involved: 'ほかの人や車は関係していますか。',
+  parked_vehicle_unoccupied: 'ぶつかった車に、人は乗っていましたか。',
   third_party_property_involved: '何にぶつかったか、またそれがどなたの持ち物か教えていただけますか。',
-  property_ownership: 'ぶつかった物は、お客さまご自身の所有物でしょうか。',
+  property_ownership: 'ぶつかった物は、お客さまご自身の物、道路の設備などの公共物、ほかの方の持ち物のどれにあたりますか。',
   incident_kind: 'どのような事故だったか、状況を教えていただけますか。',
   accident_date: '事故があったのはいつでしょうか。',
   accident_time: '何時ごろでしたか。',
@@ -45,20 +46,29 @@ export const QUESTION_TEXT: Record<string, string> = {
   accident_description: '事故の状況を教えていただけますか。',
   driver: '運転されていたのはどなたですか。',
   damage: 'お車のどこが、どのように傷つきましたか。',
+  counterparty_name: '後日、相手の方へのご連絡に必要なため伺います。ぶつかった車の持ち主のお名前は分かりますか。',
+  counterparty_address: '相手の方のご住所は分かりますか。',
+  counterparty_phone: '相手の方のお電話番号は分かりますか。',
+  police_reported: '警察には届け出ましたか。',
   caller_name_kana: 'お名前を教えていただけますか。',
   callback_phone: '折り返しのお電話番号を教えてください。',
   sms_allowed: '今後のご案内をSMSでお送りしてもよろしいですか。',
   policy_match: 'ご契約の確認のため、証券番号か、お車の登録番号を教えていただけますか。',
 };
 
-const ASK_ORDER_ELIG = ['towing_requested', 'injuries_present', 'all_occupants_injury_checked', 'other_person_or_vehicle_involved', 'third_party_property_involved', 'property_ownership', 'incident_kind'];
-const ASK_ORDER_REG = ['accident_date', 'accident_time', 'municipality', 'accident_description', 'damage', 'driver', 'caller_name_kana', 'callback_phone', 'policy_match', 'sms_allowed'];
+const ASK_ORDER_ELIG = ['towing_requested', 'injuries_present', 'all_occupants_injury_checked', 'other_person_or_vehicle_involved', 'parked_vehicle_unoccupied', 'third_party_property_involved', 'property_ownership', 'incident_kind'];
+const ASK_ORDER_REG = ['accident_date', 'accident_time', 'municipality', 'accident_description', 'damage', 'driver', 'counterparty_name', 'counterparty_address', 'counterparty_phone', 'police_reported', 'caller_name_kana', 'callback_phone', 'policy_match', 'sms_allowed'];
 
 function topicOf(q: string): string | null {
   if (/レッカー/.test(q)) return 'towing_requested';
   if (/おけが|痛み/.test(q)) return 'injuries_present';
   if (/ほかの人や車|他の人や車/.test(q)) return 'other_person_or_vehicle_involved';
-  if (/所有物/.test(q)) return 'property_ownership';
+  if (/人は乗って/.test(q)) return 'parked_vehicle_unoccupied';
+  if (/車の持ち主/.test(q)) return 'counterparty_name';
+  if (/相手の方のご住所/.test(q)) return 'counterparty_address';
+  if (/相手の方のお電話番号/.test(q)) return 'counterparty_phone';
+  if (/警察/.test(q)) return 'police_reported';
+  if (/所有物|ご自身の物/.test(q)) return 'property_ownership';
   if (/SMS/.test(q)) return 'sms_allowed';
   return null;
 }
@@ -89,12 +99,26 @@ export function extractFromText(text: string, id: string, today: string, lastAiS
       if (short === 'no') put('all_occupants_injury_checked', true);
     }
     if (topic === 'other_person_or_vehicle_involved') put('other_person_or_vehicle_involved', short === 'yes');
-    if (topic === 'property_ownership') {
-      if (short === 'yes') { put('property_ownership', 'own'); put('third_party_property_involved', false); }
-      else put('property_ownership', 'unknown', 'captured');
+    if (topic === 'property_ownership' && !/公共|道路|ほか|他人|隣|店|大家|自分|私の|うちの/.test(t)) {
+      // 3択の質問への「はい/いいえ」だけでは決められないため値を付けない
     }
     if (topic === 'sms_allowed') put('sms_allowed', short === 'yes');
   }
+
+  // 相手情報（直前に実際に聞いた質問への回答としてのみ値を取る）
+  const lastTopic = lastAiSpoken && !/内容を確認します/.test(lastAiSpoken) ? topicOf(lastAiSpoken) : null;
+  const unknownAns = /(分から|わから|分かりません|わかりません|不明|知らな|知りません|覚えていない|覚えていません)/.test(t);
+  if (lastTopic === 'counterparty_name' || lastTopic === 'counterparty_address' || lastTopic === 'counterparty_phone') {
+    const body = t.replace(/^(はい|ええ|えーと|えっと)[、,]?/, '').replace(/(です|でした|だと思います|と思います)。?$/, '');
+    if (unknownAns) put(lastTopic, null, 'explicitly_unknown', text);
+    else if (lastTopic === 'counterparty_phone') {
+      const n = body.replace(/[-ー－]/g, '').match(/0\d{9,10}/);
+      if (n) put('counterparty_phone', n[0], 'captured', text);
+    } else if (body.length >= 2 && !classifyShortAnswer(text)) put(lastTopic, body, 'captured', text);
+  }
+  if (lastTopic === 'police_reported' && short) put('police_reported', short === 'yes', 'captured', text);
+  if (lastTopic === 'police_reported' && !short && unknownAns) put('police_reported', null, 'explicitly_unknown', text);
+  if (lastTopic === 'parked_vehicle_unoccupied' && short) put('parked_vehicle_unoccupied', short === 'no', 'captured', text);
 
   const clauses = t.split(/[。、,，!！?？]/).filter(Boolean);
   for (const c of clauses) {
@@ -116,7 +140,7 @@ export function extractFromText(text: string, id: string, today: string, lastAiS
     // けが
     const selfOnlyNeg = /(私|自分|わたし)(は|には)?(けが|怪我|ケガ)(は)?(してい|し)?(ません|ない|なし)|(私|自分)は無傷/.test(c);
     const allNeg = /(全員|みんな|誰も|皆|同乗者も)(けが|怪我|ケガ)?(は|も)?(してい)?(ありません|ない|なし|していません|無傷)|乗っていたのは(私|自分)だけ.*(けが|怪我)(は)?(ありません|ない|なし)/.test(c);
-    const plainNeg = /(けが|怪我|ケガ)(は|も)?(ありません|ない|なし|していません)|無傷/.test(c);
+    const plainNeg = /(けが|怪我|ケガ)(は|も)?(ありません|ない|なく|なし|していません)|無傷/.test(c);
     const pain = /痛い|痛み|痛がって|けがをし(た|ました)|けがしました|怪我をし|出血|骨折|むちうち/.test(c) && !/痛く(ない|ありません)/.test(c);
     if (pain) {
       put('injuries_present', true, 'captured', c, correction);
@@ -141,11 +165,24 @@ export function extractFromText(text: string, id: string, today: string, lastAiS
     const otherYes = /相手の車に|相手の車と|車にぶつか|車と(ぶつか|接触|衝突)|歩行者|自転車|バイク|追突/.test(c);
     if (otherNeg) put('other_person_or_vehicle_involved', false, 'captured', c);
     else if (otherYes) put('other_person_or_vehicle_involved', true, 'captured', c, correction);
+    // 駐車中の車
+    if (/(駐車|停車|止まって|停まって|止めてあった|停めてあった)(中|して(い|あ)|いた|いる|ある)?の?(車|クルマ|くるま)/.test(c)) {
+      put('other_person_or_vehicle_involved', true, 'captured', c, correction);
+      if (/誰も乗って(い|お)?(ない|なかった|ません|ませんでした)|無人|人は乗って(い|お)?(ない|なかった|ません)/.test(t)) put('parked_vehicle_unoccupied', true, 'captured', c);
+    }
+    if (/(人が|誰か|運転手が|運転者が)乗って(いた|いました|いる|います)|信号待ち|走行中の(車|相手)|走ってきた車/.test(c)) put('parked_vehicle_unoccupied', false, 'captured', c, correction);
+    // 警察届出
+    if (/警察/.test(c)) {
+      if (/(まだ|届けていない|届けてない|届けていません|連絡していない|連絡していません|していません)/.test(c)) put('police_reported', false, 'captured', c);
+      else if (/(届け出(ました|た|済み|てあります)|届けました|届出済み|連絡しました|通報しました|電話しました|呼びました|来てもらいました)/.test(c)) put('police_reported', true, 'captured', c);
+    }
     // 物・所有関係
-    const thirdYes = /電柱|ガードレール|標識|信号機|店舗|店の|お店|他人の|隣の|よその|公共|借りている|借りてる|賃貸|借家|コンビニ|相手の壁|壁も壊れ|塀も壊れ|駐車場の(壁|柱)/.test(c);
-    const own = /自分(が|の)所有|自己所有|所有する|自分の(家|車庫|敷地|ガレージ)|持ち家|自宅所有/.test(c);
+    const publicYes = /電柱|ガードレール|標識|信号機|公共|道路の(柵|フェンス|設備)|中央分離帯|街灯|カーブミラー/.test(c);
+    const thirdYes = /店舗|店の|お店|他人の|隣の|よその|ほかの方の|借りている|借りてる|賃貸|借家|コンビニ|相手の壁|壁も壊れ|塀も壊れ|駐車場の(壁|柱)/.test(c);
+    const own = /自分(が|の)所有|自己所有|所有する|自分の(家|車庫|敷地|ガレージ|物|もの)|持ち家|自宅所有/.test(c);
     const homeAmbiguous = /(家|自宅|うち)の(塀|壁|門|車庫|ガレージ)/.test(c);
     if (thirdYes) { put('third_party_property_involved', true, 'captured', c, correction); put('property_ownership', 'third_party', 'captured', c); risks.push({ kind: 'third_party', note: c, evidenceRefs: ev }); }
+    else if (publicYes) { put('third_party_property_involved', true, 'captured', c, correction); put('property_ownership', 'public', 'captured', c); }
     else if (own) { put('third_party_property_involved', false, 'captured', c); put('property_ownership', 'own', 'captured', c); }
     else if (homeAmbiguous) { /* 「自宅」だけで自己所有にしない */ }
     // 事案種別
@@ -177,10 +214,11 @@ export function extractFromText(text: string, id: string, today: string, lastAiS
     if (drv && !/^(私|自分)$/.test(drv[2])) put('driver', drv[2], 'captured', c);
     // 氏名（読み）
     const nm = c.match(/(名前は|氏名は)([ァ-ヶー\s\u3000]+?)(です|と申します|$)/) ?? c.match(/^([ァ-ヶー\s\u3000]+?)と申します/);
-    if (nm) put('caller_name_kana', (nm[2] ?? nm[1]).trim(), 'captured', c);
+    if (nm && lastTopic !== 'counterparty_name') put('caller_name_kana', (nm[2] ?? nm[1]).trim(), 'captured', c);
     // 電話
     const ph = c.replace(/[-ー－]/g, '').match(/0\d{9,10}/);
-    if (ph) put('callback_phone', ph[0], 'captured', c, correction);
+    if (ph && lastTopic !== 'counterparty_phone') put('callback_phone', ph[0], 'captured', c, correction);
+    else if (ph) { /* 相手の電話番号として上で処理済み */ }
     else if (/(番号|電話).*(変更|変え|違い)/.test(c)) put('callback_phone', null, 'conflict', c, true);
     // 契約
     const pol = c.match(/(MOCK\d{3})/i);

@@ -11,7 +11,7 @@ GPT-Live（`gpt-live-1`）によるSpeech-to-Speech受付で、最初の振り�
 
 |区分|状況|
 |---|---|
-|Mockで検証|振り分け・ActionGate・確認/同意・RPAジョブ・模擬基幹登録・照合・重複排除・訂正・切断・転送失敗（acceptance-cases T01〜T36、Deterministic Brain、3回×36件=108/108合格）|
+|Mockで検証|振り分け・ActionGate・確認/同意・RPAジョブ・模擬基幹登録・照合・重複排除・訂正・切断・転送失敗（acceptance-cases T01〜T39、Deterministic Brain、3回×39件=117/117合格。T05・T37〜T39はD11の方針変更で更新・追加）|
 |実APIで検証|**未実施**（この環境にAPIキーがないため）。GPT-Live接続・LLM Brainはコードと公式SDK型定義(openai 7.53.0)の整合のみ確認|
 |電話回線で検証|未実施（対象外）|
 |実RPAで検証|未実施（対象外）|
@@ -76,7 +76,7 @@ NODE_ENV=production APP_PASSWORD=... npm start   # http://127.0.0.1:8787
 ## 画面
 
 - **通話・検証**：通話操作（音声/テキスト開始、ミュート、終了、切断模擬）、会話ログ（入力／実際の出力／送信予定を区別）、対象判定（3ルート・未確認・根拠・危険信号）、根拠付き受付データ（原発話・訂正履歴）、会話目的と不足項目、RPA登録状況（確認版・ジョブ・結果・模擬登録番号、照合/再試行/二重要求ボタン）、障害注入、Debug（分析履歴・監査ログ・JSON）
-- **受入テスト**：T01〜T36を画面から実行（Deterministicは無料、LLMはAPI費用あり・回数上限あり）
+- **受入テスト**：T01〜T39を画面から実行（Deterministicは無料、LLMはAPI費用あり・回数上限あり）
 - **模擬基幹台帳**：登録レコード（MOCK表示）
 
 ## テスト・品質チェック
@@ -84,7 +84,7 @@ NODE_ENV=production APP_PASSWORD=... npm start   # http://127.0.0.1:8787
 ```bash
 npm run lint        # ESLint
 npm run typecheck   # server/client の tsc --noEmit
-npm test            # vitest（acceptance T01〜T36 + 短答確認）
+npm test            # vitest（acceptance T01〜T39 + 短答・話し方の確認）
 npm run build       # vite build + tsc
 npm run eval -- --reps 3                     # 受入ケースのMarkdown合否表（Deterministic）
 npm run eval -- --brain llm --reps 1         # LLM Brain（要 OPENAI_API_KEY, BRAIN_MODEL。費用あり）

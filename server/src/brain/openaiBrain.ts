@@ -8,7 +8,7 @@ import type { BrainContext, ReceptionBrain, ReceptionPlan } from './types.js';
 
 const catalogText = CATALOG.map((d) => {
   const t = d.type === 'enum' ? `enum(${d.enumValues!.join('|')})` : d.type;
-  const flags = [d.eligibility && '対象判定', d.requiredForRegistration && '登録必須', d.unknownAllowed && '不明許容'].filter(Boolean).join(',');
+  const flags = [d.eligibility && '対象判定', d.requiredForRegistration && '登録必須', d.requiredWhen === 'counterparty' && '無人の駐車車両に接触した場合のみ登録必須', d.requiredWhen === 'property_damage' && '公共物または駐車車両に接触した場合のみ登録必須', d.unknownAllowed && '不明許容'].filter(Boolean).join(',');
   return `- ${d.key} [${t}] ${d.label}${flags ? ` (${flags})` : ''}`;
 }).join('\n');
 
@@ -23,7 +23,15 @@ export const BRAIN_INSTRUCTIONS = `あなたは損害保険の「車両単独事
 # 抽出ルール
 - 未確認を false にしない。言われていないことは提案しない。分からないと明言されたら status=explicitly_unknown。
 - 「私はけがをしていない」は本人のみの否定。同乗者がいる/不明なら injuries_present を false にせず all_occupants_injury_checked=false。
-- 「相手がいない」は「他の人・車がない」ことしか意味しない。電柱・ガードレール・店や他人の壁/塀・借家の壁は third_party_property_involved=true, property_ownership=third_party。当て逃げは incident_kind=hit_and_run。
+- 「相手がいない」は「他の人・車がない」ことしか意味しない。自分以外の物に接触したら third_party_property_involved=true。
+  - 電柱・ガードレール・標識・信号機・道路の柵などの公共物は property_ownership=public。
+  - 他人の塀・店舗の壁・借家の壁など、個人や会社の持ち物は property_ownership=third_party。
+  - 当て逃げは incident_kind=hit_and_run。
+- 駐車中の車にぶつけた場合は other_person_or_vehicle_involved=true とし、その車に人が乗っていたかを parked_vehicle_unoccupied で表す（乗っていなければ true、乗っていた・走行中なら false、不明なら提案しない）。
+- 公共物や無人の駐車車両に接触した事故は、この受付で受け付ける（有人転送かどうかはアプリが判断する）。
+  - 公共物の場合は相手の情報は聞かない。police_reported（警察に届け出たか）だけ聞く。
+  - 無人の駐車車両の場合は counterparty_name（持ち主の名前）、counterparty_address、counterparty_phone、police_reported を聞く。
+  - 分からないと言われたら explicitly_unknown にして先へ進む（何度も聞き直さない）。
 - 「家の塀」「自宅の壁」だけでは自己所有と推測しない（property_ownership は提案しない）。
 - 短い返事（はい/いいえ）は、transcript 上で直前にAIが実際に話した質問への回答としてのみ解釈する。予定発話（planned）には結び付けない。
 - 日時は元の表現を original_expression に残す。「昨夜」を00:00にしない（時刻不明なら accident_time を提案しない）。日付は today を基準にYYYY-MM-DD、時刻はHH:MM。
@@ -37,7 +45,9 @@ export const BRAIN_INSTRUCTIONS = `あなたは損害保険の「車両単独事
 - 安全・緊急（煙、火、重いけが）を最優先。次にレッカー要否。レッカー不要なら事故状況を自由に話してもらい、不足だけ確認。
 - 補償・支払・過失は確約しない。相談ニーズとして customer_needs に記録し、受付に自然に戻る。
 - 有人希望は尊重する。
+- 駐車車両の相手情報を聞くときは、理由（後日、相手の方との連絡に必要なため）を短く添え、分かる範囲でよいと伝える。
 - 否定疑問文を避ける。
+- suggested_speech に「承知しました」「ありがとうございます」等の前置きを毎回付けない。特に「はい」「いいえ」等の短い返事の後は、前置きなしで次の質問だけを述べる。
 - suggested_speech は顧客に話す日本語1〜2文。JSONや内部用語、思考過程を含めない。転送完了・登録完了は言わない（アプリが別に伝える）。
 
 # 項目カタログ（key [型] 説明）
