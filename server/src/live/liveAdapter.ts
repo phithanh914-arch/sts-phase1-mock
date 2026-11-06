@@ -25,7 +25,12 @@ export interface LiveConfig {
   maxSessionsPerDay: number;
   turnGapMs: number;
   delegationWaitMs: number;
+  /** 委任の結果がこの時間内に出なければ「確認いたします」と言う（0で無効） */
+  fillerAfterMs: number;
 }
+
+/** 分析が長引いたときのつなぎ言葉（Takaさん指定 2026-11-06） */
+export const FILLER_TEXT = '確認いたします。';
 
 interface LiveRuntime {
   sideband: SidebandWS | null;
@@ -42,8 +47,11 @@ interface LiveRuntime {
   /** 「そのまま伝えて」指示を送ってから、その発話が終わる（出力transcriptが区切れる）までの間 true */
   exactSpeaking: boolean;
   /** 話している途中に届いた委任なしの「そのまま伝えて」指示（前の発話が終わってから送る） */
-  exactQueue: { eventId: string; text: string }[];
+  exactQueue: { eventId: string; text: string; delegationId: string | null }[];
   exactTimer?: NodeJS.Timeout;
+  fillerTimer?: NodeJS.Timeout;
+  /** 今話しているのが「確認いたします」のつなぎ言葉か */
+  fillerSpeaking: boolean;
 }
 
 export class LiveAdapter {
@@ -94,7 +102,7 @@ export class LiveAdapter {
     const liveSessionId = res.session.id;
     conv.live.sessionId = liveSessionId;
     conv.log('live_session_created', { liveSessionId, model: this.cfg.model, voice, speed, tone, store: false });
-    const rt: LiveRuntime = { sideband: null, inBuf: { text: '' }, outBuf: { text: '' }, outstandingDelegations: [], readbackEventIds: new Map(), pendingReadback: null, seq: 0, closed: false, exactSpeaking: false, exactQueue: [] };
+    const rt: LiveRuntime = { sideband: null, inBuf: { text: '' }, outBuf: { text: '' }, outstandingDelegations: [], readbackEventIds: new Map(), pendingReadback: null, seq: 0, closed: false, exactSpeaking: false, exactQueue: [], fillerSpeaking: false };
     this.runtimes.set(conv.id, rt);
     this.attach(conv, rt, liveSessionId);
     rt.maxTimer = setTimeout(() => {
@@ -164,6 +172,15 @@ export class LiveAdapter {
         conv.log('delegation_created', { id: d.delegation.id, target: d.delegation.target });
         if (d.delegation.target !== 'client') break;
         rt.outstandingDelegations.push(d.delegation.id);
+        // 分析が長引いたときだけ「確認いたします」と言う（D15）。短ければ何も言わずに次の質問へ
+        clearTimeout(rt.fillerTimer);
+        if (this.cfg.fillerAfterMs > 0) {
+          rt.fillerTimer = setTimeout(() => {
+            if (rt.closed || !rt.outstandingDelegations.includes(d.delegation.id) || rt.exactSpeaking) return;
+            rt.fillerSpeaking = true;
+            this.sendExact(conv, rt, this.eid(conv, rt, 'filler'), null, FILLER_TEXT, false);
+          }, this.cfg.fillerAfterMs);
+        }
         clearTimeout(rt.inTimer);
         this.flushIn(conv, rt);
         if (conv.unanalyzedCustomerUtterances().length > 0 || conv.analysisInFlight) void this.ctl.requestAnalysis(conv, 'delegation', null);
@@ -247,8 +264,9 @@ export class LiveAdapter {
 
   /** 「そのまま伝えて」指示を送る。前の指示を話している途中なら、話し終わってから送る（発話が混ざるのを防ぐ） */
   private sendExact(conv: Conversation, rt: LiveRuntime, eventId: string, delegationId: string | null, text: string, queueable: boolean) {
-    if (queueable && rt.exactSpeaking) {
-      rt.exactQueue.push({ eventId, text });
+    // つなぎ言葉の途中に届いた委任の結果は、言い終わってから送る（重なり防止）
+    if ((queueable || rt.fillerSpeaking) && rt.exactSpeaking) {
+      rt.exactQueue.push({ eventId, text, delegationId });
       conv.log('exact_queued', { event_id: eventId });
       return;
     }
@@ -262,9 +280,10 @@ export class LiveAdapter {
   private exactDone(conv: Conversation, rt: LiveRuntime) {
     if (!rt.exactSpeaking) return;
     rt.exactSpeaking = false;
+    rt.fillerSpeaking = false;
     clearTimeout(rt.exactTimer);
     const next = rt.exactQueue.shift();
-    if (next && !rt.closed) this.sendExact(conv, rt, next.eventId, null, next.text, false);
+    if (next && !rt.closed) this.sendExact(conv, rt, next.eventId, next.delegationId, next.text, false);
   }
 
   private makeSink(): SpeechSink {
@@ -275,6 +294,7 @@ export class LiveAdapter {
         this.ctl.addUtterance(conv, { speaker: 'ai', text: d.text, kind: 'planned', source: 'live', tag: d.tag });
         if (!rt) return;
         const delegationId = rt.outstandingDelegations.shift() ?? null;
+        if (delegationId) clearTimeout(rt.fillerTimer);
         const eventId = this.eid(conv, rt, d.kind);
         if (d.kind === 'readback' && d.tag) rt.readbackEventIds.set(eventId, d.tag.replace('readback:', ''));
         if (d.exact || delegationId || solicited) {
@@ -309,6 +329,7 @@ export class LiveAdapter {
     clearTimeout(rt.maxTimer);
     clearTimeout(rt.inTimer);
     clearTimeout(rt.exactTimer);
+    clearTimeout(rt.fillerTimer);
     this.flushIn(conv, rt);
     this.flushOut(conv, rt);
     try { rt.sideband?.close({ code: 1000, reason: 'done' }); } catch { /* ignore */ }
