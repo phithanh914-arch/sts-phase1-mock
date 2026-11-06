@@ -25,7 +25,7 @@ const defaultBrain = brains.llm ? 'llm' : 'rule';
 
 const ctl = new SessionController({ brains, defaultBrain, dataDir: config.dataDir, brainTimeoutMs: config.brainTimeoutMs, callWaitLimitMs: config.callWaitLimitMs });
 const live = config.openaiApiKey
-  ? new LiveAdapter({ apiKey: config.openaiApiKey, model: config.liveModel, voice: config.liveVoice, voices: config.liveVoices, maxSessionSeconds: config.liveMaxSessionSeconds, maxConcurrent: config.liveMaxConcurrent, maxSessionsPerDay: config.liveMaxSessionsPerDay, turnGapMs: config.liveTurnGapMs }, ctl)
+  ? new LiveAdapter({ apiKey: config.openaiApiKey, model: config.liveModel, voice: config.liveVoice, voices: config.liveVoices, maxSessionSeconds: config.liveMaxSessionSeconds, maxConcurrent: config.liveMaxConcurrent, maxSessionsPerDay: config.liveMaxSessionsPerDay, turnGapMs: config.liveTurnGapMs, delegationWaitMs: config.liveDelegationWaitMs }, ctl)
   : null;
 
 // ログ保存期限（既定72時間）を過ぎた会話ログを削除

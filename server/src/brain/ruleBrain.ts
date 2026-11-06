@@ -18,6 +18,19 @@ function addDays(ymd: string, d: number): string {
 
 const toHalf = (s: string) => s.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
 
+/**
+ * 短い返事の肯定/否定を判定する（直前にAIが実際に話した質問への回答としてのみ使う）。
+ * 「いえ、大丈夫です」「はい、大丈夫です」「特にないです」等の言い回しを扱う。
+ */
+export function classifyShortAnswer(raw: string): 'yes' | 'no' | null {
+  const t = toHalf(raw).replace(/[\s、。,.!！?？]/g, '');
+  if (!t || t.length > 24) return null;
+  if (/^(いいえ|いえ|いや|いーえ)/.test(t)) return 'no';
+  if (/(大丈夫|ないです|なかった|ありません|いません|いない|おりません|不要|いらない|いりません|要らない|結構|無傷|元気|平気|なし|特に)/.test(t)) return 'no';
+  if (/^(はい|ええ|うん|そうです|お願い|必要|あります|います|いる|ある|けが人|痛い)/.test(t)) return 'yes';
+  return null;
+}
+
 export const QUESTION_TEXT: Record<string, string> = {
   towing_requested: 'まず、レッカーの手配は必要でしょうか。',
   injuries_present: '事故でおけがをされた方や、痛みのある方はいらっしゃいますか。',
@@ -64,15 +77,16 @@ export function extractFromText(text: string, id: string, today: string, lastAiS
   const correction = /と言いましたが|と言ったけど|ではなく|訂正|やっぱり|やはり|さっきは/.test(t);
 
   // 短答
-  let short: 'yes' | 'no' | null = null;
-  if (/^(はい|ええ|うん|そうです|お願いします|必要です|はいお願いします|あります|います)[。!！]?$/.test(t)) short = 'yes';
-  if (/^(いいえ|いえ|いや|ないです|ありません|いません|いらないです|いりません|不要です|大丈夫です|結構です)[。!！]?$/.test(t)) short = 'no';
-  if (short && lastAiSpoken && !/^内容を確認します/.test(lastAiSpoken)) {
-    const topic = topicOf(lastAiSpoken);
+  const short = classifyShortAnswer(text);
+  if (short && lastAiSpoken && !/内容を確認します/.test(lastAiSpoken)) {
+    let topic = topicOf(lastAiSpoken);
+    // 「物は大丈夫」等、けがの質問への返事か判断できないものは結び付けない
+    if (topic === 'injuries_present' && /物|もの|車は|車が/.test(t)) topic = null;
     if (topic === 'towing_requested') put('towing_requested', short === 'yes', 'captured', text);
     if (topic === 'injuries_present') {
       put('injuries_present', short === 'yes', 'captured', text);
-      if (/一緒に乗っていた方も含めて/.test(lastAiSpoken) && short === 'no') put('all_occupants_injury_checked', true);
+      // 質問は「けがや痛みのある方（全員）」を対象にしているため、否定は全員についての回答として扱う
+      if (short === 'no') put('all_occupants_injury_checked', true);
     }
     if (topic === 'other_person_or_vehicle_involved') put('other_person_or_vehicle_involved', short === 'yes');
     if (topic === 'property_ownership') {
@@ -231,7 +245,10 @@ export class RuleBrain implements ReceptionBrain {
       const u = ctx.transcript[idx];
       if (!u) continue;
       const lastAi = [...ctx.transcript.slice(0, idx)].reverse().find((x) => x.speaker === 'ai' && x.kind === 'spoken');
-      const r = extractFromText(u.text, u.id, ctx.today, lastAi?.text ?? null);
+      // 音声では1回のAI発話が複数ターンに分かれることがあるため、直前の顧客発話以降のAI発話をまとめて参照する
+      const prevCust = [...ctx.transcript.slice(0, idx)].map((x) => x.speaker).lastIndexOf('customer');
+      const aiSince = ctx.transcript.slice(prevCust + 1, idx).filter((x) => x.speaker === 'ai' && x.kind === 'spoken').map((x) => x.text).join('');
+      const r = extractFromText(u.text, u.id, ctx.today, aiSince || (lastAi?.text ?? null));
       for (const p of r.proposals) {
         const i = proposals.findIndex((x) => x.key === p.key);
         if (i >= 0) proposals[i] = p; else proposals.push(p);

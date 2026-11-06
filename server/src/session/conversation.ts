@@ -67,6 +67,8 @@ export class Conversation {
   riskLog: { at: string; kind: string; note: string }[] = [];
   amendmentPending = false;
   nextIntent = '';
+  /** 直近に発話指示した質問（新しい入力のない委任への応答に使う） */
+  lastQuestion = '';
   desiredInformation: string[] = [];
   lastBriefReason = '';
   audit: AuditEntry[] = [];

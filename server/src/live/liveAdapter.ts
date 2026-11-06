@@ -24,6 +24,7 @@ export interface LiveConfig {
   maxConcurrent: number;
   maxSessionsPerDay: number;
   turnGapMs: number;
+  delegationWaitMs: number;
 }
 
 interface LiveRuntime {
@@ -160,7 +161,16 @@ export class LiveAdapter {
         clearTimeout(rt.inTimer);
         this.flushIn(conv, rt);
         if (conv.unanalyzedCustomerUtterances().length > 0 || conv.analysisInFlight) void this.ctl.requestAnalysis(conv, 'delegation', null);
-        else this.ctl.respondCurrent(conv, null);
+        else {
+          // 委任が入力transcriptより先に届くことがあるため、少し待ってから判断する
+          setTimeout(() => {
+            if (rt.closed || !rt.outstandingDelegations.includes(d.delegation.id)) return;
+            clearTimeout(rt.inTimer);
+            this.flushIn(conv, rt);
+            if (conv.unanalyzedCustomerUtterances().length > 0 || conv.analysisInFlight) void this.ctl.requestAnalysis(conv, 'delegation_late_transcript', null);
+            else this.ctl.respondCurrent(conv, null);
+          }, this.cfg.delegationWaitMs);
+        }
         break;
       }
       case 'session.instructions.appended':

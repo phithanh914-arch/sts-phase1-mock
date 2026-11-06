@@ -22,6 +22,7 @@ export const config = {
   liveMaxConcurrent: num(process.env.LIVE_MAX_CONCURRENT, 1),
   liveMaxSessionsPerDay: num(process.env.LIVE_MAX_SESSIONS_PER_DAY, 30),
   liveTurnGapMs: num(process.env.LIVE_TURN_GAP_MS, 900),
+  liveDelegationWaitMs: num(process.env.LIVE_DELEGATION_WAIT_MS, 1200),
   evalMaxLlmRuns: num(process.env.EVAL_MAX_LLM_RUNS, 40),
   callWaitLimitMs: num(process.env.CALL_WAIT_LIMIT_MS, 20000),
   dataDir: process.env.DATA_DIR ?? 'data',
