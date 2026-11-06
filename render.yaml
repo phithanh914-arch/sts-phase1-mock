@@ -26,7 +26,9 @@ services:
       - key: LIVE_MODEL
         value: gpt-live-1
       - key: LIVE_VOICE
-        value: marin
+        value: harema
+      - key: LIVE_VOICES
+        value: harema,shida,marin
       - key: LIVE_MAX_SESSION_SECONDS
         value: "600"
       - key: LIVE_MAX_CONCURRENT

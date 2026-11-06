@@ -10,6 +10,7 @@ export interface LiveHandle {
 
 export async function startLive(opts: {
   brain?: string;
+  voice?: string;
   audio: HTMLAudioElement;
   onStatus: (s: string) => void;
   onClosed: (reason: string) => void;
@@ -51,7 +52,7 @@ export async function startLive(opts: {
     }
     const sdp = pc.localDescription?.sdp;
     if (!sdp) throw new Error('SDP offerを作成できませんでした');
-    const res = await fetch('/api/live/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sdp, brain: opts.brain }) });
+    const res = await fetch('/api/live/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sdp, brain: opts.brain, voice: opts.voice }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error ?? 'Liveセッション作成に失敗しました');
     await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp });
