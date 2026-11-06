@@ -21,7 +21,8 @@ if (config.production && !config.appPassword) {
 
 // ───────── Brain ─────────
 const brains: Record<string, ReceptionBrain> = { rule: new RuleBrain() };
-if (config.openaiApiKey && config.brainModel) brains.llm = new OpenAIBrain(config.brainModel, config.openaiApiKey, config.brainTimeoutMs);
+// BRAIN_MODELを複数指定した場合は llm, llm2, llm3… として画面で選べる（先頭が既定）
+if (config.openaiApiKey) config.brainModels.forEach((m, i) => { brains[i === 0 ? 'llm' : `llm${i + 1}`] = new OpenAIBrain(m, config.openaiApiKey, config.brainTimeoutMs); });
 const defaultBrain = brains.llm ? 'llm' : 'rule';
 
 const ctl = new SessionController({ brains, defaultBrain, dataDir: config.dataDir, brainTimeoutMs: config.brainTimeoutMs, callWaitLimitMs: config.callWaitLimitMs });
