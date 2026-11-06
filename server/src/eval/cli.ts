@@ -1,5 +1,5 @@
 // 受入ケースをCLIで実行し、Markdownの合否表を出力する。
-// 使い方: npm run eval -- [--brain rule|llm] [--reps 3] [--ids T01,T02]
+// 使い方: npm run eval -- [--brain rule|llm] [--model <BRAIN_MODELのうち1つ>] [--reps 3] [--ids T01,T02]
 // llm はOPENAI_API_KEYとBRAIN_MODELが必要（API費用が発生。EVAL_MAX_LLM_RUNSで上限）。
 import { RuleBrain } from '../brain/ruleBrain.js';
 import { OpenAIBrain } from '../brain/openaiBrain.js';
@@ -17,7 +17,8 @@ if (brainName === 'llm') {
   const total = (ids?.length ?? CASES.length) * reps;
   const max = Number(process.env.EVAL_MAX_LLM_RUNS ?? 40);
   if (total > max) { console.error(`実行回数 ${total} が上限 ${max} を超えます`); process.exit(1); }
-  brain = new OpenAIBrain(process.env.BRAIN_MODEL, process.env.OPENAI_API_KEY, 20000);
+  const model = arg('model') ?? process.env.BRAIN_MODEL.split(',')[0].trim();
+  brain = new OpenAIBrain(model, process.env.OPENAI_API_KEY, 20000);
 } else brain = new RuleBrain();
 
 const make: MakeHarness = (opts = {}) => new Harness({ b: opts.wrapBrain ? opts.wrapBrain(brain) : brain }, 'b', { brainTimeoutMs: brainName === 'rule' ? 30000 : 20000, ...opts });

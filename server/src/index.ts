@@ -11,6 +11,7 @@ import type { ReceptionBrain } from './brain/types.js';
 import { TextSink, Harness } from './eval/harness.js';
 import { CASES, runCases, type CaseResult, type MakeHarness } from './eval/cases.js';
 import { LiveAdapter } from './live/liveAdapter.js';
+import { SPEECH_SPEEDS, SPEECH_TONES, DEFAULT_SPEED, DEFAULT_TONE } from './live/instructions.js';
 import type { Conversation } from './session/conversation.js';
 
 if (config.production && !config.appPassword) {
@@ -20,12 +21,13 @@ if (config.production && !config.appPassword) {
 
 // ───────── Brain ─────────
 const brains: Record<string, ReceptionBrain> = { rule: new RuleBrain() };
-if (config.openaiApiKey && config.brainModel) brains.llm = new OpenAIBrain(config.brainModel, config.openaiApiKey, config.brainTimeoutMs);
+// BRAIN_MODELを複数指定した場合は llm, llm2, llm3… として画面で選べる（先頭が既定）
+if (config.openaiApiKey) config.brainModels.forEach((m, i) => { brains[i === 0 ? 'llm' : `llm${i + 1}`] = new OpenAIBrain(m, config.openaiApiKey, config.brainTimeoutMs); });
 const defaultBrain = brains.llm ? 'llm' : 'rule';
 
 const ctl = new SessionController({ brains, defaultBrain, dataDir: config.dataDir, brainTimeoutMs: config.brainTimeoutMs, callWaitLimitMs: config.callWaitLimitMs });
 const live = config.openaiApiKey
-  ? new LiveAdapter({ apiKey: config.openaiApiKey, model: config.liveModel, voice: config.liveVoice, voices: config.liveVoices, maxSessionSeconds: config.liveMaxSessionSeconds, maxConcurrent: config.liveMaxConcurrent, maxSessionsPerDay: config.liveMaxSessionsPerDay, turnGapMs: config.liveTurnGapMs }, ctl)
+  ? new LiveAdapter({ apiKey: config.openaiApiKey, model: config.liveModel, voice: config.liveVoice, voices: config.liveVoices, maxSessionSeconds: config.liveMaxSessionSeconds, maxConcurrent: config.liveMaxConcurrent, maxSessionsPerDay: config.liveMaxSessionsPerDay, turnGapMs: config.liveTurnGapMs, delegationWaitMs: config.liveDelegationWaitMs }, ctl)
   : null;
 
 // ログ保存期限（既定72時間）を過ぎた会話ログを削除
@@ -84,6 +86,10 @@ api.get('/config', (_req, res) => {
     liveModel: config.liveModel,
     liveVoice: config.liveVoice,
     liveVoices: config.liveVoices,
+    speechSpeeds: Object.fromEntries(Object.entries(SPEECH_SPEEDS).map(([k, v]) => [k, v.label])),
+    speechTones: Object.fromEntries(Object.entries(SPEECH_TONES).map(([k, v]) => [k, v.label])),
+    defaultSpeed: DEFAULT_SPEED,
+    defaultTone: DEFAULT_TONE,
     liveUsage: live?.usage() ?? null,
     faults: ctl.faults,
     summary: configSummary(),
@@ -159,7 +165,7 @@ api.post('/live/session', async (req, res) => {
   const sdp = req.body?.sdp;
   if (typeof sdp !== 'string' || !sdp.trim()) return res.status(400).json({ error: 'SDP offer が必要です' });
   try {
-    const r = await live.start(sdp, typeof req.body?.brain === 'string' ? req.body.brain : undefined, typeof req.body?.voice === 'string' ? req.body.voice : undefined);
+    const r = await live.start(sdp, typeof req.body?.brain === 'string' ? req.body.brain : undefined, typeof req.body?.voice === 'string' ? req.body.voice : undefined, { speed: req.body?.speed, tone: req.body?.tone });
     res.status(201).json(r);
   } catch (e) {
     const err = e as { status?: number; message?: string };

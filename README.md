@@ -64,7 +64,7 @@ NODE_ENV=production APP_PASSWORD=... npm start   # http://127.0.0.1:8787
 3. 入力を求められる環境変数を設定
    - `APP_PASSWORD`：画面ログイン用（推測されにくいもの）
    - `OPENAI_API_KEY`：OpenAIのAPIキー（音声を使う場合）
-   - `BRAIN_MODEL`：LLM Brainを使う場合のみ（空ならDeterministic）
+   - `BRAIN_MODEL`：LLM Brainを使う場合のみ（空ならDeterministic）。カンマ区切りで複数指定すると画面の「受付Brain」で切り替え可能（先頭が既定）
 4. **Apply** → ビルド完了後に表示される `https://sts-phase1-mock-xxxx.onrender.com` を別PCのブラウザで開く
 5. パスワードでログイン → 「音声で開始」→ マイクを許可
 

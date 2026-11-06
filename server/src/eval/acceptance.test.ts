@@ -34,3 +34,31 @@ describe('confirmation by short answer', () => {
     expect(h.coreRecords().length).toBe(1);
   });
 });
+
+describe('音声で多い短い返事（けがの質問）', () => {
+  for (const [ans, exp] of [['いえ、大丈夫です', false], ['大丈夫です', false], ['はい、大丈夫です', false], ['特にないです', false], ['いいえ', false], ['はい、います', true]] as const) {
+    it(`「${ans}」→ injuries_present=${exp}`, async () => {
+      const h = make();
+      await h.say('レッカーはいりません。');
+      expect(h.lastAi()).toMatch(/おけが|痛み/);
+      await h.say(ans);
+      expect(h.fact('injuries_present').value).toBe(exp);
+      if (!exp) expect(h.fact('all_occupants_injury_checked').value).toBe(true);
+      else expect(h.conv.route.route).toBe('OPERATOR');
+    });
+  }
+  it('「物は大丈夫です」はけがの回答として扱わない', async () => {
+    const h = make();
+    await h.say('レッカーはいりません。');
+    await h.say('物は大丈夫です');
+    expect(h.fact('injuries_present').status).toBe('missing');
+  });
+  it('AI発話が複数ターンに分かれても直前の質問に結び付ける', async () => {
+    const h = make();
+    await h.say('レッカーはいりません。');
+    h.ctl.aiSpoke(h.conv, 'はい、ありがとうございます', 'text');
+    await h.say('いえ、大丈夫です');
+    // 直前の分割ターンには質問がないが、同じ応答区間の質問（けが）に結び付く
+    expect(h.fact('injuries_present').value).toBe(false);
+  });
+});

@@ -16,7 +16,7 @@ const VOICE_JA: Record<string, string> = { harema: '日本語・女性', shida: 
 const ROUTE_JA: Record<string, string> = { TOWING: 'レッカー担当へ', SELF_SERVICE: 'AI受付（自動完結候補）', OPERATOR: 'オペレーターへ', OPERATOR_EMERGENCY: '緊急：オペレーターへ', UNRESOLVED: '確認中' };
 
 interface Cfg {
-  liveEnabled: boolean; brains: Record<string, string>; defaultBrain: string; liveModel: string; liveVoice: string; liveVoices: string[];
+  liveEnabled: boolean; brains: Record<string, string>; defaultBrain: string; liveModel: string; liveVoice: string; liveVoices: string[]; speechSpeeds: Record<string, string>; speechTones: Record<string, string>; defaultSpeed: string; defaultTone: string;
   liveUsage: { activeSessions: number; sessionsToday: number; maxPerDay: number; maxSessionSeconds: number } | null;
   faults: { rpa: string; transfer: string }; cases: { id: string; title: string; expected: string }[]; evalMaxLlmRuns: number;
   summary: Record<string, unknown>;
@@ -75,6 +75,8 @@ function CallView({ cfg, reloadCfg }: { cfg: Cfg; reloadCfg: () => void }) {
   const [conv, setConv] = useState<Conv | null>(null);
   const [brain, setBrain] = useState(cfg.defaultBrain);
   const [voice, setVoice] = useState(cfg.liveVoice);
+  const [speed, setSpeed] = useState(cfg.defaultSpeed);
+  const [tone, setTone] = useState(cfg.defaultTone);
   const [text, setText] = useState('');
   const [status, setStatus] = useState('');
   const [muted, setMuted] = useState(false);
@@ -100,7 +102,7 @@ function CallView({ cfg, reloadCfg }: { cfg: Cfg; reloadCfg: () => void }) {
   const startVoice = async () => {
     setBusy(true); setStatus('接続中…（マイクの使用を許可してください）');
     try {
-      const h = await startLive({ brain, voice, audio: audioRef.current!, onStatus: setStatus, onClosed: (r) => { setStatus(`通話終了（${r}）`); liveRef.current = null; reloadCfg(); } });
+      const h = await startLive({ brain, voice, speed, tone, audio: audioRef.current!, onStatus: setStatus, onClosed: (r) => { setStatus(`通話終了（${r}）`); liveRef.current = null; reloadCfg(); } });
       liveRef.current = h; follow(h.conversationId); setMuted(false);
     } catch (e) { setStatus(`開始できません: ${(e as Error).message}`); }
     setBusy(false);
@@ -138,6 +140,18 @@ function CallView({ cfg, reloadCfg }: { cfg: Cfg; reloadCfg: () => void }) {
             </label>
           </div>
           <div className="row">
+            <label>話し方・速さ：
+              <select value={speed} onChange={(e) => setSpeed(e.target.value)} disabled={!ended}>
+                {Object.entries(cfg.speechSpeeds).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+            </label>
+            <label>トーン：
+              <select value={tone} onChange={(e) => setTone(e.target.value)} disabled={!ended}>
+                {Object.entries(cfg.speechTones).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="row">
             <button disabled={!ended || busy || !cfg.liveEnabled} onClick={startVoice} title={cfg.liveEnabled ? '' : 'OPENAI_API_KEY未設定'}>🎤 音声で開始（GPT-Live）</button>
             <button disabled={!ended || busy} onClick={startText}>⌨ テキストで開始</button>
           </div>
@@ -148,7 +162,7 @@ function CallView({ cfg, reloadCfg }: { cfg: Cfg; reloadCfg: () => void }) {
           </div>
           <audio ref={audioRef} autoPlay controls className="audio" />
           <p className="muted small">{status}</p>
-          {cfg.liveUsage && <p className="muted small">Live: {cfg.liveModel} / 声は通話開始時に固定（途中変更不可） ・本日 {cfg.liveUsage.sessionsToday}/{cfg.liveUsage.maxPerDay} セッション・1通話上限 {cfg.liveUsage.maxSessionSeconds}秒{conv?.live.sessionId ? ` ・音声 ${conv.live.voiceSeconds.toFixed(0)}秒（約$${(conv.live.voiceSeconds / 60 * 0.05).toFixed(3)}＋Brain費用）` : ''}</p>}
+          {cfg.liveUsage && <p className="muted small">Live: {cfg.liveModel} / 声・話し方は通話開始時に固定（途中変更不可、音声モードのみ有効） ・本日 {cfg.liveUsage.sessionsToday}/{cfg.liveUsage.maxPerDay} セッション・1通話上限 {cfg.liveUsage.maxSessionSeconds}秒{conv?.live.sessionId ? ` ・音声 ${conv.live.voiceSeconds.toFixed(0)}秒（約$${(conv.live.voiceSeconds / 60 * 0.05).toFixed(3)}＋Brain費用）` : ''}</p>}
           {!cfg.liveEnabled && <p className="warn small">OPENAI_API_KEY が未設定のため音声は無効です（テキストのDeterministicモードは利用可）。</p>}
         </div>
 

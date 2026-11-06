@@ -12,7 +12,7 @@ import OpenAI from 'openai';
 import { SidebandWS } from 'openai/resources/live/sideband/ws';
 import type { Conversation } from '../session/conversation.js';
 import type { SessionController, SpeechDirective, SpeechSink } from '../session/controller.js';
-import { LIVE_INSTRUCTIONS } from './instructions.js';
+import { buildLiveInstructions, normalizeStyle } from './instructions.js';
 import { GREETING } from '../session/controller.js';
 
 export interface LiveConfig {
@@ -24,6 +24,7 @@ export interface LiveConfig {
   maxConcurrent: number;
   maxSessionsPerDay: number;
   turnGapMs: number;
+  delegationWaitMs: number;
 }
 
 interface LiveRuntime {
@@ -54,8 +55,9 @@ export class LiveAdapter {
   usage() { return { activeSessions: this.activeCount(), sessionsToday: this.dayCount, maxPerDay: this.cfg.maxSessionsPerDay, maxConcurrent: this.cfg.maxConcurrent, maxSessionSeconds: this.cfg.maxSessionSeconds }; }
 
   /** ブラウザのSDP offerを受け取り、Liveセッションを作成してSDP answerを返す */
-  async start(sdp: string, brain?: string, voiceReq?: string): Promise<{ conversationId: string; sdp: string; liveSessionId: string; voice: string }> {
+  async start(sdp: string, brain?: string, voiceReq?: string, styleReq?: { speed?: unknown; tone?: unknown }): Promise<{ conversationId: string; sdp: string; liveSessionId: string; voice: string; speed: string; tone: string }> {
     const voice = voiceReq && this.cfg.voices.includes(voiceReq) ? voiceReq : this.cfg.voice;
+    const { speed, tone } = normalizeStyle(styleReq?.speed, styleReq?.tone);
     const today = new Date().toISOString().slice(0, 10);
     if (today !== this.day) { this.day = today; this.dayCount = 0; }
     if (this.activeCount() >= this.cfg.maxConcurrent) throw Object.assign(new Error('同時接続上限に達しています'), { status: 429 });
@@ -66,7 +68,7 @@ export class LiveAdapter {
     const res = await this.client.live.create({
       session: {
         model: this.cfg.model,
-        instructions: LIVE_INSTRUCTIONS,
+        instructions: buildLiveInstructions(speed, tone),
         audio: { output: { voice } },
         delegation: { type: 'client' },
         store: false,
@@ -86,7 +88,7 @@ export class LiveAdapter {
     this.dayCount += 1;
     const liveSessionId = res.session.id;
     conv.live.sessionId = liveSessionId;
-    conv.log('live_session_created', { liveSessionId, model: this.cfg.model, voice, store: false });
+    conv.log('live_session_created', { liveSessionId, model: this.cfg.model, voice, speed, tone, store: false });
     const rt: LiveRuntime = { sideband: null, inBuf: { text: '' }, outBuf: { text: '' }, outstandingDelegations: [], readbackEventIds: new Map(), pendingReadback: null, seq: 0, closed: false };
     this.runtimes.set(conv.id, rt);
     this.attach(conv, rt, liveSessionId);
@@ -94,7 +96,7 @@ export class LiveAdapter {
       conv.log('live_max_duration_reached', { seconds: this.cfg.maxSessionSeconds });
       this.close(conv, 'max_duration');
     }, this.cfg.maxSessionSeconds * 1000);
-    return { conversationId: conv.id, sdp: res.transport.sdp, liveSessionId, voice };
+    return { conversationId: conv.id, sdp: res.transport.sdp, liveSessionId, voice, speed, tone };
   }
 
   private attach(conv: Conversation, rt: LiveRuntime, sessionId: string) {
@@ -160,7 +162,16 @@ export class LiveAdapter {
         clearTimeout(rt.inTimer);
         this.flushIn(conv, rt);
         if (conv.unanalyzedCustomerUtterances().length > 0 || conv.analysisInFlight) void this.ctl.requestAnalysis(conv, 'delegation', null);
-        else this.ctl.respondCurrent(conv, null);
+        else {
+          // 委任が入力transcriptより先に届くことがあるため、少し待ってから判断する
+          setTimeout(() => {
+            if (rt.closed || !rt.outstandingDelegations.includes(d.delegation.id)) return;
+            clearTimeout(rt.inTimer);
+            this.flushIn(conv, rt);
+            if (conv.unanalyzedCustomerUtterances().length > 0 || conv.analysisInFlight) void this.ctl.requestAnalysis(conv, 'delegation_late_transcript', null);
+            else this.ctl.respondCurrent(conv, null);
+          }, this.cfg.delegationWaitMs);
+        }
         break;
       }
       case 'session.instructions.appended':

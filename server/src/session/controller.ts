@@ -150,6 +150,7 @@ export class SessionController {
 
   private speak(c: Conversation, d: SpeechDirective, delegationId: string | null, solicited: boolean) {
     const sink = this.sinks.get(c.id);
+    if (d.kind === 'question' || d.kind === 'greeting') c.lastQuestion = d.text;
     c.log('speech_directive', { ...d, delegationId });
     sink?.deliver(c, d, delegationId, solicited);
     if (c.mode === 'text' && d.kind === 'readback' && c.confirmation) this.markReadbackDelivered(c, c.confirmation.confirmationId);
@@ -621,7 +622,7 @@ export class SessionController {
   respondCurrent(c: Conversation, delegationId: string | null) {
     const d: SpeechDirective = c.confirmation?.status === 'PENDING'
       ? { kind: 'readback', text: c.confirmation.readbackText, exact: true, tag: `readback:${c.confirmation.confirmationId}` }
-      : { kind: 'question', text: c.callState === 'TRANSFER_REQUESTED' ? 'ただいま担当者におつなぎしています。' : '続けてお話しください。', exact: false };
+      : { kind: 'question', text: c.callState === 'TRANSFER_REQUESTED' ? 'ただいま担当者におつなぎしています。' : c.lastQuestion || GREETING, exact: false };
     this.speak(c, d, delegationId, true);
   }
 

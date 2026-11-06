@@ -16,12 +16,14 @@ export const config = {
   liveVoice: process.env.LIVE_VOICE || 'harema',
   // 画面で選べる声（許可リスト）
   liveVoices: (process.env.LIVE_VOICES || 'harema,shida,marin').split(',').map((s) => s.trim()).filter(Boolean),
-  brainModel: process.env.BRAIN_MODEL ?? '',
+  // カンマ区切りで複数指定可（先頭が既定）。例: BRAIN_MODEL=model-a,model-b
+  brainModels: (process.env.BRAIN_MODEL ?? '').split(',').map((s) => s.trim()).filter(Boolean),
   brainTimeoutMs: num(process.env.BRAIN_TIMEOUT_MS, 20000),
   liveMaxSessionSeconds: num(process.env.LIVE_MAX_SESSION_SECONDS, 600),
   liveMaxConcurrent: num(process.env.LIVE_MAX_CONCURRENT, 1),
   liveMaxSessionsPerDay: num(process.env.LIVE_MAX_SESSIONS_PER_DAY, 30),
   liveTurnGapMs: num(process.env.LIVE_TURN_GAP_MS, 900),
+  liveDelegationWaitMs: num(process.env.LIVE_DELEGATION_WAIT_MS, 1200),
   evalMaxLlmRuns: num(process.env.EVAL_MAX_LLM_RUNS, 40),
   callWaitLimitMs: num(process.env.CALL_WAIT_LIMIT_MS, 20000),
   dataDir: process.env.DATA_DIR ?? 'data',
@@ -38,6 +40,6 @@ export function configSummary() {
     openaiKeySet: !!config.openaiApiKey,
     liveModel: config.liveModel,
     liveVoice: config.liveVoice,
-    brainModel: config.brainModel || '(未設定: Deterministicのみ)',
+    brainModels: config.brainModels.length ? config.brainModels : '(未設定: Deterministicのみ)',
   };
 }
