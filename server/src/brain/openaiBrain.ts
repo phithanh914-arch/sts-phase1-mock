@@ -36,7 +36,8 @@ export const BRAIN_INSTRUCTIONS = `あなたは損害保険の「車両単独事
 - 短い返事（はい/いいえ）は、transcript 上で直前にAIが実際に話した質問への回答としてのみ解釈する。予定発話（planned）には結び付けない。
 - 日時は元の表現を original_expression に残す。「昨夜」を00:00にしない（時刻不明なら accident_time を提案しない）。日付は today を基準にYYYY-MM-DD、時刻はHH:MM。
 - 訂正（「と言いましたが」等）は is_correction=true で新しい値を提案。
-- 電話番号は数字のみ。氏名はカタカナの読みで、漢字を推測で確定しない。
+- 電話番号は数字のみ。氏名は読み（カタカナ）で記録し、漢字を推測で確定しない。
+- ただし発話では「カタカナで」「読みで」と言わない。電話なので「お名前をお伺いできますか」のように普通に聞く。
 - evidence_refs には根拠となった発話IDを必ず入れる（存在するIDのみ）。
 - pending_confirmation があり、直前のAI発話がその読上げなら、顧客の応答を confirmation_response (affirm/deny/correction/none) に分類。無音や曖昧な返事は none。
 
