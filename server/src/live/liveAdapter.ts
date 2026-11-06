@@ -277,14 +277,13 @@ export class LiveAdapter {
         const delegationId = rt.outstandingDelegations.shift() ?? null;
         const eventId = this.eid(conv, rt, d.kind);
         if (d.kind === 'readback' && d.tag) rt.readbackEventIds.set(eventId, d.tag.replace('readback:', ''));
-        if (d.exact) {
+        if (d.exact || delegationId || solicited) {
+          // 2026-11-06（D14）：質問も含め、話す内容はすべて「そのまま伝えて」で渡す。commentaryだと音声側が質問を付け足すため。
           // 委任への応答と緊急案内はすぐ送る。委任なしの追加案内（転送結果など）は前の発話が終わるまで待つ
           this.sendExact(conv, rt, eventId, delegationId, d.text, !delegationId && d.kind !== 'emergency');
-        } else if (delegationId || solicited) {
-          this.send(conv, rt, { type: 'session.commentary.append', event_id: eventId, delegation_id: delegationId, content: d.text });
         } else {
-          // 委任されていない分析結果は話させず、背景情報として渡す（二重発話を避ける）
-          this.send(conv, rt, { type: 'session.thinking.append', event_id: eventId, delegation_id: null, content: `次に話すときの方針（言い換え可）：${d.text}` });
+          // 委任されていない分析結果は話させない（次の委任でrespondCurrentが同じ質問を返す）。二重発話を避ける
+          this.send(conv, rt, { type: 'session.thinking.append', event_id: eventId, delegation_id: null, content: `参考（自分からは話さないこと）：バックエンドの次の質問予定は「${d.text}」。相手が話したら委任して結果を待つ。` });
         }
       },
       context: (conv: Conversation, summary: string) => {

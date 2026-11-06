@@ -629,7 +629,7 @@ export class SessionController {
   contextSummary(c: Conversation): string {
     const known = Object.values(c.facts).filter((f) => f.status === 'captured' || f.status === 'confirmed').map((f) => `${f.key}=${String(f.value)}`).join('; ');
     const unknown = Object.values(c.facts).filter((f) => f.status === 'explicitly_unknown').map((f) => f.key).join(',');
-    const miss = missingForRegistration(c.facts, c.policy.matched).join(',');
-    return `[受付状態] route=${c.route.route} call=${c.callState} reception=${c.receptionState} registration=${c.registrationState}. 確認済みの事実: ${known || 'なし'}. 不明と言われた項目: ${unknown || 'なし'}. 未取得: ${[...c.route.unresolved, miss].filter(Boolean).join(',') || 'なし'}. 既に聞いたことは再度聞かない。登録完了・転送完了はアプリから明示されるまで言わない。`;
+    // 未取得項目の一覧は渡さない（音声側が自分で質問を作る原因になるため。D14）
+    return `[参考情報・自分からは話さないこと] route=${c.route.route} call=${c.callState} reception=${c.receptionState} registration=${c.registrationState}. 確認済みの事実: ${known || 'なし'}. 不明と言われた項目: ${unknown || 'なし'}. この情報を元に自分で質問を作らない。話す内容はバックエンドから届いたものだけ。登録完了・転送完了はアプリから明示されるまで言わない。`;
   }
 }
