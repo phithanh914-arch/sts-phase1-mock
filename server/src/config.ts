@@ -18,6 +18,8 @@ export const config = {
   liveVoices: (process.env.LIVE_VOICES || 'harema,shida,marin').split(',').map((s) => s.trim()).filter(Boolean),
   // カンマ区切りで複数指定可（先頭が既定）。例: BRAIN_MODEL=model-a,model-b
   brainModels: (process.env.BRAIN_MODEL ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+  // Brainの推論量（none/minimal/low/medium/high）。小さいほど速い。空なら指定しない
+  brainReasoningEffort: process.env.BRAIN_REASONING_EFFORT ?? 'low',
   brainTimeoutMs: num(process.env.BRAIN_TIMEOUT_MS, 20000),
   liveMaxSessionSeconds: num(process.env.LIVE_MAX_SESSION_SECONDS, 600),
   liveMaxConcurrent: num(process.env.LIVE_MAX_CONCURRENT, 1),
@@ -41,5 +43,6 @@ export function configSummary() {
     liveModel: config.liveModel,
     liveVoice: config.liveVoice,
     brainModels: config.brainModels.length ? config.brainModels : '(未設定: Deterministicのみ)',
+    brainReasoningEffort: config.brainReasoningEffort || '(指定なし)',
   };
 }

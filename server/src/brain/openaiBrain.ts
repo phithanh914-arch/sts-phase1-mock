@@ -42,13 +42,17 @@ export const BRAIN_INSTRUCTIONS = `あなたは損害保険の「車両単独事
 
 # 会話方針
 - 質問の順序・まとめ方はあなたが選ぶ。固定順の質問票にしない。既に答えられたことは聞かない。一度に一つの自然な話題。
-- 安全・緊急（煙、火、重いけが）を最優先。次にレッカー要否。レッカー不要なら事故状況を自由に話してもらい、不足だけ確認。
+- 安全・緊急を最優先。次にレッカー要否。レッカー不要なら事故状況を自由に話してもらい、不足だけ確認。
+- 安全を聞くときは「今、急いで対応が必要な状況はありますか」のように聞く。「煙・火など」の例示や「危険な状況」という言い方はしない。顧客の話から急ぎの状況がないと分かれば聞かない。
+- けがは「おけがをされた方はいらっしゃいますか」のように一度だけ聞く。「いない」と答えたら、乗っていた全員について答えたものとして injuries_present=false と all_occupants_injury_checked=true にし、重ねて聞かない。
+  - 「私は」など本人だけの否定のときに限り、同乗者の有無やけがを確認する。
+  - 乗車人数（occupants）は登録に不要なので、わざわざ聞かない。
 - 補償・支払・過失は確約しない。相談ニーズとして customer_needs に記録し、受付に自然に戻る。
 - 有人希望は尊重する。
 - 駐車車両の相手情報を聞くときは、理由（後日、相手の方との連絡に必要なため）を短く添え、分かる範囲でよいと伝える。
 - 否定疑問文を避ける。
 - suggested_speech に「承知しました」「ありがとうございます」等の前置きを毎回付けない。特に「はい」「いいえ」等の短い返事の後は、前置きなしで次の質問だけを述べる。
-- suggested_speech は顧客に話す日本語1〜2文。JSONや内部用語、思考過程を含めない。転送完了・登録完了は言わない（アプリが別に伝える）。
+- suggested_speech は顧客に話す日本語1文を基本とし、長くても2文。同じことを言い換えて重ねない。JSONや内部用語、思考過程を含めない。転送完了・登録完了は言わない（アプリが別に伝える）。
 
 # 項目カタログ（key [型] 説明）
 ${catalogText}
@@ -121,9 +125,12 @@ interface RawPlan {
 export class OpenAIBrain implements ReceptionBrain {
   readonly name: string;
   private client: OpenAI;
-  constructor(private model: string, apiKey: string, private timeoutMs = 20000) {
+  /** 応答を速くするための推論量。モデルが受け付けない場合は、1回目のエラー後に指定なしへ切り替える */
+  private reasoningEffort: 'none' | 'minimal' | 'low' | 'medium' | 'high' | null;
+  constructor(private model: string, apiKey: string, private timeoutMs = 20000, reasoningEffort = 'low') {
     this.client = new OpenAI({ apiKey, maxRetries: 0, timeout: timeoutMs });
     this.name = `openai-responses:${model}`;
+    this.reasoningEffort = (['none', 'minimal', 'low', 'medium', 'high'] as const).find((x) => x === reasoningEffort) ?? null;
   }
 
   async analyze(ctx: BrainContext): Promise<ReceptionPlan> {
@@ -139,13 +146,24 @@ export class OpenAIBrain implements ReceptionBrain {
       transcript: ctx.transcript.map((u) => ({ id: u.id, speaker: u.speaker, kind: u.kind, text: u.text })),
       new_customer_utterance_ids: ctx.newUtteranceIds,
     };
-    const res = await this.client.responses.create({
+    const req = {
       model: this.model,
       instructions: BRAIN_INSTRUCTIONS,
       input: JSON.stringify(input),
       store: false,
-      text: { format: { type: 'json_schema', name: 'reception_plan', strict: true, schema: PLAN_SCHEMA as unknown as Record<string, unknown> } },
-    });
+      text: { format: { type: 'json_schema' as const, name: 'reception_plan', strict: true, schema: PLAN_SCHEMA as unknown as Record<string, unknown> } },
+    };
+    let res;
+    try {
+      res = await this.client.responses.create(this.reasoningEffort ? { ...req, reasoning: { effort: this.reasoningEffort } } : req);
+    } catch (e) {
+      const err = e as { status?: number; message?: string };
+      if (this.reasoningEffort && err.status === 400 && /reasoning/i.test(err.message ?? '')) {
+        console.warn(`BRAIN_REASONING_EFFORT=${this.reasoningEffort} は ${this.model} で使えないため、指定なしに切り替えます`);
+        this.reasoningEffort = null;
+        res = await this.client.responses.create(req);
+      } else throw e;
+    }
     const raw = JSON.parse(res.output_text) as RawPlan;
     return {
       analysisId: ctx.analysisId,
