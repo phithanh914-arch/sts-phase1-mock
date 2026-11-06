@@ -12,7 +12,10 @@ export const config = {
   sessionSecret: process.env.SESSION_SECRET || randomBytes(32).toString('hex'),
   openaiApiKey: process.env.OPENAI_API_KEY ?? '',
   liveModel: process.env.LIVE_MODEL || 'gpt-live-1',
-  liveVoice: process.env.LIVE_VOICE || 'marin',
+  // 既定は日本語の声 harema（公式Voice optionsで Japanese / Feminine）。shida は Japanese / Masculine。
+  liveVoice: process.env.LIVE_VOICE || 'harema',
+  // 画面で選べる声（許可リスト）
+  liveVoices: (process.env.LIVE_VOICES || 'harema,shida,marin').split(',').map((s) => s.trim()).filter(Boolean),
   brainModel: process.env.BRAIN_MODEL ?? '',
   brainTimeoutMs: num(process.env.BRAIN_TIMEOUT_MS, 20000),
   liveMaxSessionSeconds: num(process.env.LIVE_MAX_SESSION_SECONDS, 600),

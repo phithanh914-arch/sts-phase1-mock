@@ -19,6 +19,7 @@ export interface LiveConfig {
   apiKey: string;
   model: string;
   voice: string;
+  voices: string[];
   maxSessionSeconds: number;
   maxConcurrent: number;
   maxSessionsPerDay: number;
@@ -53,7 +54,8 @@ export class LiveAdapter {
   usage() { return { activeSessions: this.activeCount(), sessionsToday: this.dayCount, maxPerDay: this.cfg.maxSessionsPerDay, maxConcurrent: this.cfg.maxConcurrent, maxSessionSeconds: this.cfg.maxSessionSeconds }; }
 
   /** ブラウザのSDP offerを受け取り、Liveセッションを作成してSDP answerを返す */
-  async start(sdp: string, brain?: string): Promise<{ conversationId: string; sdp: string; liveSessionId: string }> {
+  async start(sdp: string, brain?: string, voiceReq?: string): Promise<{ conversationId: string; sdp: string; liveSessionId: string; voice: string }> {
+    const voice = voiceReq && this.cfg.voices.includes(voiceReq) ? voiceReq : this.cfg.voice;
     const today = new Date().toISOString().slice(0, 10);
     if (today !== this.day) { this.day = today; this.dayCount = 0; }
     if (this.activeCount() >= this.cfg.maxConcurrent) throw Object.assign(new Error('同時接続上限に達しています'), { status: 429 });
@@ -65,7 +67,7 @@ export class LiveAdapter {
       session: {
         model: this.cfg.model,
         instructions: LIVE_INSTRUCTIONS,
-        audio: { output: { voice: this.cfg.voice } },
+        audio: { output: { voice } },
         delegation: { type: 'client' },
         store: false,
         client: {
@@ -84,7 +86,7 @@ export class LiveAdapter {
     this.dayCount += 1;
     const liveSessionId = res.session.id;
     conv.live.sessionId = liveSessionId;
-    conv.log('live_session_created', { liveSessionId, model: this.cfg.model, voice: this.cfg.voice, store: false });
+    conv.log('live_session_created', { liveSessionId, model: this.cfg.model, voice, store: false });
     const rt: LiveRuntime = { sideband: null, inBuf: { text: '' }, outBuf: { text: '' }, outstandingDelegations: [], readbackEventIds: new Map(), pendingReadback: null, seq: 0, closed: false };
     this.runtimes.set(conv.id, rt);
     this.attach(conv, rt, liveSessionId);
@@ -92,7 +94,7 @@ export class LiveAdapter {
       conv.log('live_max_duration_reached', { seconds: this.cfg.maxSessionSeconds });
       this.close(conv, 'max_duration');
     }, this.cfg.maxSessionSeconds * 1000);
-    return { conversationId: conv.id, sdp: res.transport.sdp, liveSessionId };
+    return { conversationId: conv.id, sdp: res.transport.sdp, liveSessionId, voice };
   }
 
   private attach(conv: Conversation, rt: LiveRuntime, sessionId: string) {
