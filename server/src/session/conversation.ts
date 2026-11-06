@@ -3,7 +3,8 @@ import { decideRoute } from '../domain/routing.js';
 import type { CallState, ClaimSnapshot, Confirmation, Fact, ReceptionState, RegistrationState, RouteDecision, Utterance } from '../domain/types.js';
 import type { JobRecord } from '../adapters/rpa.js';
 import type { HandoffPackage, TransferTarget } from '../adapters/telephony.js';
-import type { ReceptionPlan } from '../brain/types.js';
+import type { BrainUsage, ReceptionPlan } from '../brain/types.js';
+import { PROFILES, type LatencyProfile, type TurnTrace } from './latency.js';
 
 export interface AnalysisRecord {
   analysisId: string;
@@ -19,6 +20,12 @@ export interface AnalysisRecord {
   rejectedProposals?: { key: string; issue: string }[];
   changedKeys?: string[];
   error?: string;
+  turnId?: string;
+  /** Fast Pathで確定した場合のルール名 */
+  fastPathRule?: string;
+  usage?: BrainUsage;
+  /** Shadow評価（FASTPATH_SHADOW=1）：同じ発話をLLMでも分析した結果との比較。状態には適用しない */
+  shadow?: { status: 'running' | 'agree' | 'disagree' | 'error'; diffs?: string[]; latencyMs?: number };
 }
 
 export interface TransferInfo {
@@ -69,6 +76,16 @@ export class Conversation {
   nextIntent = '';
   /** 直近に発話指示した質問（新しい入力のない委任への応答に使う） */
   lastQuestion = '';
+  /** 直近に発話指示した質問のID（コードが選んだ質問のみ。LLMが作った質問はnull）。Fast Pathの前提 */
+  lastQuestionKey: string | null = null;
+  /** 質問IDごとの発話指示回数（「急ぎの状況」「事故の状況」は1回だけ聞く） */
+  askedCounts: Record<string, number> = {};
+  /** 遅延改善のプロファイル（D16） */
+  profile: LatencyProfile = PROFILES.baseline;
+  /** 推論量の上書き（比較計測用。undefinedならBrainの既定） */
+  effortOverride: string | null | undefined = undefined;
+  /** ターンごとの遅延計測（D18） */
+  turns: TurnTrace[] = [];
   desiredInformation: string[] = [];
   lastBriefReason = '';
   audit: AuditEntry[] = [];
@@ -122,6 +139,9 @@ export class Conversation {
       transfer: this.transfer,
       transferHistory: this.transferHistory,
       analyses: this.analyses.slice(-30),
+      profile: this.profile.name,
+      lastQuestionKey: this.lastQuestionKey,
+      turns: this.turns.slice(-60),
       analysisInFlight: this.analysisInFlight,
       clarifyCount: this.clarifyCount,
       customerNeeds: this.customerNeeds,

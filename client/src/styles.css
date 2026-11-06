@@ -45,6 +45,8 @@ pre { background: #f2f4f7; padding: 8px; font-size: 11px; overflow: auto; max-he
 table.facts { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.facts th { text-align: left; font-weight: normal; color: var(--muted); width: 34%; padding: 3px 6px 3px 0; vertical-align: top; }
 table.facts td { padding: 3px 4px; border-bottom: 1px solid #f0f2f5; vertical-align: top; }
+table.facts.latency th { width: auto; white-space: nowrap; }
+table.facts.latency td { white-space: nowrap; }
 table.eval th { width: auto; }
 .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; }
 .tag.unk { background: #eef1f6; } .tag.bad { background: #fde6e7; color: var(--err); }

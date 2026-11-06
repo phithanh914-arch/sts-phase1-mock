@@ -2,24 +2,29 @@ import { describe, it, expect } from 'vitest';
 import { CASES, type MakeHarness } from './cases.js';
 import { Harness } from './harness.js';
 import { RuleBrain } from '../brain/ruleBrain.js';
+import type { ProfileName } from '../session/latency.js';
 
 // APIキー不要のDeterministic比較モードで業務ロジック（振り分け・ゲート・RPA状態）を検証する。
 // LLM方式・音声の品質はこのテストの対象外。
-const make: MakeHarness = (opts = {}) => {
+const makeFor = (profile: ProfileName): MakeHarness => (opts = {}) => {
   const base = new RuleBrain();
   const brain = opts.wrapBrain ? opts.wrapBrain(base) : base;
-  return new Harness({ rule: brain }, 'rule', opts);
+  return new Harness({ rule: brain }, 'rule', { profile, ...opts });
 };
+const make = makeFor('baseline');
 
-describe('acceptance-cases (rule brain, text path)', () => {
-  for (const cd of CASES) {
-    it(`${cd.id} ${cd.title} → ${cd.expected}`, async () => {
-      const checks = await cd.run(make);
-      const failed = checks.filter((c) => !c.pass);
-      expect(failed, JSON.stringify(failed, null, 1)).toEqual([]);
-    }, 15000);
-  }
-});
+// 改善前（A）・軽量化（B）・Hybrid（C）のすべてで既存39ケースが通ること（D16〜D18の回帰確認）
+for (const profile of ['baseline', 'lightweight', 'hybrid'] as const) {
+  describe(`acceptance-cases (rule brain, text path, profile=${profile})`, () => {
+    for (const cd of CASES) {
+      it(`${cd.id} ${cd.title} → ${cd.expected}`, async () => {
+        const checks = await cd.run(makeFor(profile));
+        const failed = checks.filter((c) => !c.pass);
+        expect(failed, JSON.stringify(failed, null, 1)).toEqual([]);
+      }, 15000);
+    }
+  });
+}
 
 describe('confirmation by short answer', () => {
   it('「はい」だけで最終確認に同意できる（読上げ直後のみ）', async () => {

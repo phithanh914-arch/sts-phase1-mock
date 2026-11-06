@@ -1,16 +1,20 @@
 // 受入ケースをCLIで実行し、Markdownの合否表を出力する。
-// 使い方: npm run eval -- [--brain rule|llm] [--model <BRAIN_MODELのうち1つ>] [--reps 3] [--ids T01,T02]
+// 使い方: npm run eval -- [--brain rule|llm] [--model <BRAIN_MODELのうち1つ>] [--profile baseline|lightweight|hybrid] [--effort none|low|...] [--reps 3] [--ids T01,T02]
 // llm はOPENAI_API_KEYとBRAIN_MODELが必要（API費用が発生。EVAL_MAX_LLM_RUNSで上限）。
 import { RuleBrain } from '../brain/ruleBrain.js';
 import { OpenAIBrain } from '../brain/openaiBrain.js';
 import type { ReceptionBrain } from '../brain/types.js';
 import { Harness } from './harness.js';
+import type { ProfileName } from '../session/latency.js';
 import { runCases, CASES, type MakeHarness } from './cases.js';
 
 const arg = (k: string) => { const i = process.argv.indexOf(`--${k}`); return i >= 0 ? process.argv[i + 1] : undefined; };
 const brainName = arg('brain') ?? 'rule';
 const reps = Number(arg('reps') ?? 3);
 const ids = arg('ids')?.split(',') ?? null;
+const profile = (arg('profile') ?? 'baseline') as ProfileName;
+if (!['baseline', 'lightweight', 'hybrid'].includes(profile)) { console.error('--profile は baseline|lightweight|hybrid'); process.exit(1); }
+const effort = arg('effort');
 let brain: ReceptionBrain;
 if (brainName === 'llm') {
   if (!process.env.OPENAI_API_KEY || !process.env.BRAIN_MODEL) { console.error('OPENAI_API_KEY と BRAIN_MODEL が必要です'); process.exit(1); }
@@ -18,12 +22,12 @@ if (brainName === 'llm') {
   const max = Number(process.env.EVAL_MAX_LLM_RUNS ?? 40);
   if (total > max) { console.error(`実行回数 ${total} が上限 ${max} を超えます`); process.exit(1); }
   const model = arg('model') ?? process.env.BRAIN_MODEL.split(',')[0].trim();
-  brain = new OpenAIBrain(model, process.env.OPENAI_API_KEY, 20000);
+  brain = new OpenAIBrain(model, process.env.OPENAI_API_KEY, 20000, effort ?? process.env.BRAIN_REASONING_EFFORT ?? 'low');
 } else brain = new RuleBrain();
 
-const make: MakeHarness = (opts = {}) => new Harness({ b: opts.wrapBrain ? opts.wrapBrain(brain) : brain }, 'b', { brainTimeoutMs: brainName === 'rule' ? 30000 : 20000, ...opts });
+const make: MakeHarness = (opts = {}) => new Harness({ b: opts.wrapBrain ? opts.wrapBrain(brain) : brain }, 'b', { brainTimeoutMs: brainName === 'rule' ? 30000 : 20000, profile, ...opts });
 const results = await runCases(make, ids, reps);
-console.log(`# 受入テスト結果（brain=${brain.name}, 繰返し=${reps}, 実行日時=${new Date().toISOString()}）\n`);
+console.log(`# 受入テスト結果（brain=${brain.name}, profile=${profile}, 繰返し=${reps}, 実行日時=${new Date().toISOString()}）\n`);
 console.log('|ID|ケース|期待|合格/回数|失敗したチェック（根拠）|');
 console.log('|---|---|---|---|---|');
 for (const c of CASES.filter((x) => !ids || ids.includes(x.id))) {

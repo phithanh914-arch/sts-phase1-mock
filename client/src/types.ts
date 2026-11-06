@@ -19,8 +19,19 @@ export interface Conv {
   confirmation: { confirmationId: string; snapshotVersion: number; snapshotHash: string; status: string; readbackDelivered: boolean; invalidatedReason?: string } | null;
   activeJobId: string | null; jobs: Job[];
   transfer: { target: string; status: string; package: unknown } | null;
-  analyses: { analysisId: string; status: string; baseStateVersion: number; inputWatermark: string; latencyMs?: number; trigger: string; changedKeys?: string[]; rejectedProposals?: unknown[] }[];
+  analyses: { analysisId: string; status: string; baseStateVersion: number; inputWatermark: string; latencyMs?: number; trigger: string; changedKeys?: string[]; rejectedProposals?: unknown[]; brain?: string; fastPathRule?: string; usage?: { inputTokens: number; outputTokens: number; costUsd: number | null }; shadow?: { status: string; diffs?: string[] } }[];
+  profile: string;
+  turns: Turn[];
   customerNeeds: string[]; amendmentPending: boolean; nextIntent: string; desiredInformation: string[]; lastBriefReason: string;
   audit: { at: string; event: string; detail?: unknown }[];
   live: { sessionId: string | null; voiceSeconds: number };
+}
+
+export interface Turn {
+  turnId: string; profile: string; brain: string; effort: string | null; mode: string;
+  fastPath: 'off' | 'hit' | 'miss'; fastPathRule?: string; fallbackReason?: string;
+  status: string; analyses: number; errors: string[];
+  live: { answerMatch?: string };
+  durations: Record<string, number>;
+  usage?: { inputTokens: number; outputTokens: number; costUsd: number | null };
 }

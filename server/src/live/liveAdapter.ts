@@ -14,6 +14,7 @@ import type { Conversation } from '../session/conversation.js';
 import type { SessionController, SpeechDirective, SpeechSink } from '../session/controller.js';
 import { buildLiveInstructions, normalizeStyle } from './instructions.js';
 import { GREETING } from '../session/controller.js';
+import { GREETING_QUESTION_KEY } from '../domain/questions.js';
 
 export interface LiveConfig {
   apiKey: string;
@@ -52,6 +53,11 @@ interface LiveRuntime {
   fillerTimer?: NodeJS.Timeout;
   /** 今話しているのが「確認いたします」のつなぎ言葉か */
   fillerSpeaking: boolean;
+  /** 遅延計測：このターンの応答として送った指示のevent_id（出力transcriptのclient_event_idと照合する） */
+  answerEventId: string | null;
+  /** 遅延計測：応答を送った時点までに出力された音声の終わり（Liveの時間軸） */
+  outEndAtSend: number;
+  lastOutEndMs: number;
 }
 
 export class LiveAdapter {
@@ -68,7 +74,7 @@ export class LiveAdapter {
   usage() { return { activeSessions: this.activeCount(), sessionsToday: this.dayCount, maxPerDay: this.cfg.maxSessionsPerDay, maxConcurrent: this.cfg.maxConcurrent, maxSessionSeconds: this.cfg.maxSessionSeconds }; }
 
   /** ブラウザのSDP offerを受け取り、Liveセッションを作成してSDP answerを返す */
-  async start(sdp: string, brain?: string, voiceReq?: string, styleReq?: { speed?: unknown; tone?: unknown }): Promise<{ conversationId: string; sdp: string; liveSessionId: string; voice: string; speed: string; tone: string }> {
+  async start(sdp: string, brain?: string, voiceReq?: string, styleReq?: { speed?: unknown; tone?: unknown }, profile?: unknown): Promise<{ conversationId: string; sdp: string; liveSessionId: string; voice: string; speed: string; tone: string; profile: string }> {
     const voice = voiceReq && this.cfg.voices.includes(voiceReq) ? voiceReq : this.cfg.voice;
     const { speed, tone } = normalizeStyle(styleReq?.speed, styleReq?.tone);
     const today = new Date().toISOString().slice(0, 10);
@@ -77,7 +83,7 @@ export class LiveAdapter {
     if (this.dayCount >= this.cfg.maxSessionsPerDay) throw Object.assign(new Error('本日のセッション上限に達しています'), { status: 429 });
 
     const sink = this.makeSink();
-    const conv = this.ctl.create('live', sink, brain);
+    const conv = this.ctl.create('live', sink, brain, profile);
     const res = await this.client.live.create({
       session: {
         model: this.cfg.model,
@@ -102,14 +108,23 @@ export class LiveAdapter {
     const liveSessionId = res.session.id;
     conv.live.sessionId = liveSessionId;
     conv.log('live_session_created', { liveSessionId, model: this.cfg.model, voice, speed, tone, store: false });
-    const rt: LiveRuntime = { sideband: null, inBuf: { text: '' }, outBuf: { text: '' }, outstandingDelegations: [], readbackEventIds: new Map(), pendingReadback: null, seq: 0, closed: false, exactSpeaking: false, exactQueue: [], fillerSpeaking: false };
+    const rt: LiveRuntime = { sideband: null, inBuf: { text: '' }, outBuf: { text: '' }, outstandingDelegations: [], readbackEventIds: new Map(), pendingReadback: null, seq: 0, closed: false, exactSpeaking: false, exactQueue: [], fillerSpeaking: false, answerEventId: null, outEndAtSend: -1, lastOutEndMs: -1 };
     this.runtimes.set(conv.id, rt);
     this.attach(conv, rt, liveSessionId);
     rt.maxTimer = setTimeout(() => {
       conv.log('live_max_duration_reached', { seconds: this.cfg.maxSessionSeconds });
       this.close(conv, 'max_duration');
     }, this.cfg.maxSessionSeconds * 1000);
-    return { conversationId: conv.id, sdp: res.transport.sdp, liveSessionId, voice, speed, tone };
+    return { conversationId: conv.id, sdp: res.transport.sdp, liveSessionId, voice, speed, tone, profile: conv.profile.name };
+  }
+
+  /** テスト用：ネットワークに接続せずに会話とruntimeを作る。sidebandへの送信は sent に記録し、emitでサーバイベントを注入する */
+  testSession(brain?: string, profile?: unknown): { conv: Conversation; sent: Record<string, unknown>[]; emit: (ev: Record<string, unknown> & { type: string }) => void } {
+    const conv = this.ctl.create('live', this.makeSink(), brain, profile);
+    const sent: Record<string, unknown>[] = [];
+    const rt: LiveRuntime = { sideband: { send: (ev: Record<string, unknown>) => { sent.push(ev); }, close: () => undefined } as unknown as SidebandWS, inBuf: { text: '' }, outBuf: { text: '' }, outstandingDelegations: [], readbackEventIds: new Map(), pendingReadback: null, seq: 0, closed: false, exactSpeaking: false, exactQueue: [], fillerSpeaking: false, answerEventId: null, outEndAtSend: -1, lastOutEndMs: -1 };
+    this.runtimes.set(conv.id, rt);
+    return { conv, sent, emit: (ev) => this.onEvent(conv, rt, ev) };
   }
 
   private attach(conv: Conversation, rt: LiveRuntime, sessionId: string) {
@@ -140,13 +155,19 @@ export class LiveAdapter {
       case 'session.started': {
         conv.live.startedAt = new Date().toISOString();
         conv.log('live_session_started');
-        // 最初の名乗りとレッカー確認（文言はアプリ管理）
+        // 最初の名乗りとレッカー確認（文言はアプリ管理）。質問ID（レッカー）を記録し、Fast Pathの前提にする
+        conv.lastQuestion = GREETING;
+        conv.lastQuestionKey = GREETING_QUESTION_KEY;
+        conv.askedCounts[GREETING_QUESTION_KEY] = 1;
         this.send(conv, rt, { type: 'session.instructions.append', event_id: this.eid(conv, rt, 'greeting'), delegation_id: null, content: `今すぐ、次の内容をそのまま伝えてください：「${GREETING}」` });
         break;
       }
       case 'session.input_transcript.delta': {
         const d = ev as unknown as { delta: string; start_ms: number; end_ms: number };
         if (rt.outBuf.text) this.flushOut(conv, rt);
+        // 遅延計測：顧客の発話の終わり（最後に受け取った入力の終端）
+        const turn = this.ctl.turnMark(conv, 'speech_end', true);
+        if (turn && typeof d.end_ms === 'number') turn.live.speechEndMs = d.end_ms;
         rt.inBuf.text += d.delta;
         rt.inBuf.start ??= d.start_ms;
         rt.inBuf.end = d.end_ms;
@@ -158,7 +179,8 @@ export class LiveAdapter {
         break;
       }
       case 'session.output_transcript.delta': {
-        const d = ev as unknown as { delta: string; start_ms: number; end_ms: number };
+        const d = ev as unknown as { delta: string; start_ms: number; end_ms: number; client_event_id?: string };
+        this.traceOutput(conv, rt, d);
         if (rt.inBuf.text && this.flushIn(conv, rt)) void this.ctl.requestAnalysis(conv, 'ai_started_speaking', null);
         rt.outBuf.text += d.delta;
         rt.outBuf.start ??= d.start_ms;
@@ -168,8 +190,10 @@ export class LiveAdapter {
         break;
       }
       case 'session.delegation.created': {
-        const d = ev as unknown as { delegation: { id: string; target: string } };
-        conv.log('delegation_created', { id: d.delegation.id, target: d.delegation.target });
+        const d = ev as unknown as { delegation: { id: string; target: string }; offset_ms?: number };
+        conv.log('delegation_created', { id: d.delegation.id, target: d.delegation.target, offset_ms: d.offset_ms });
+        const turn = this.ctl.turnMark(conv, 'delegation_received');
+        if (turn && turn.live.delegationOffsetMs === undefined && typeof d.offset_ms === 'number') turn.live.delegationOffsetMs = d.offset_ms;
         if (d.delegation.target !== 'client') break;
         rt.outstandingDelegations.push(d.delegation.id);
         // 分析が長引いたときだけ「確認いたします」と言う（D15）。短ければ何も言わずに次の質問へ
@@ -184,7 +208,11 @@ export class LiveAdapter {
         clearTimeout(rt.inTimer);
         this.flushIn(conv, rt);
         if (conv.unanalyzedCustomerUtterances().length > 0 || conv.analysisInFlight) void this.ctl.requestAnalysis(conv, 'delegation', null);
-        else {
+        else if (conv.profile.answerDelegationWithoutWait && this.turnAlreadyCaptured(conv)) {
+          // D18：このターンの発話はすでに受け取り、分析も終わっている（Fast Path等）。待たずに次の質問を返す
+          conv.log('delegation_answered_without_wait', { id: d.delegation.id });
+          this.ctl.respondCurrent(conv, null);
+        } else {
           // 委任が入力transcriptより先に届くことがあるため、少し待ってから判断する
           setTimeout(() => {
             if (rt.closed || !rt.outstandingDelegations.includes(d.delegation.id)) return;
@@ -238,7 +266,37 @@ export class LiveAdapter {
     rt.inBuf = { text: '' };
     if (!text || conv.callState === 'ENDED') return false;
     this.ctl.addUtterance(conv, { speaker: 'customer', text, kind: 'input', source: 'live', startMs: start, endMs: end });
+    this.ctl.turnMark(conv, 'utterance_flushed', true);
     return true;
+  }
+
+  /** このターンの顧客発話を受け取り済みで、まだ応答していないか（委任を待たずに答えてよいか） */
+  private turnAlreadyCaptured(conv: Conversation): boolean {
+    const t = this.ctl.currentTurn(conv);
+    const rt = this.runtimes.get(conv.id);
+    return !!t && t.marks.utterance_flushed !== undefined && t.marks.speech_sent === undefined && !rt?.inBuf.text;
+  }
+
+  /** 遅延計測：出力transcriptの時刻から、そのターンの最初の音声・応答の音声開始を記録する */
+  private traceOutput(conv: Conversation, rt: LiveRuntime, d: { start_ms: number; end_ms: number; client_event_id?: string }) {
+    const t = this.ctl.currentTurn(conv);
+    if (t) {
+      const afterSpeechEnd = t.live.speechEndMs === undefined || d.start_ms >= t.live.speechEndMs;
+      if (t.live.firstAudioMs === undefined && afterSpeechEnd) { t.live.firstAudioMs = d.start_ms; this.ctl.turnMark(conv, 'first_audio'); }
+      if (t.marks.speech_sent !== undefined && t.live.answerAudioMs === undefined) {
+        // 送った指示のevent_idが付いていればそれで照合。付いていなければ、送信後に始まった最初の出力とみなす（近似・要検証）
+        const byId = !!rt.answerEventId && d.client_event_id === rt.answerEventId;
+        const afterSend = !d.client_event_id && d.start_ms > rt.outEndAtSend;
+        if (byId || afterSend) {
+          t.live.answerAudioMs = d.start_ms;
+          t.live.answerMatch = byId ? 'event_id' : 'after_send';
+          this.ctl.turnMark(conv, 'answer_audio');
+          this.ctl.closeTurn(conv, 'answered');
+          this.ctl.changed(conv);
+        }
+      }
+    }
+    if (typeof d.end_ms === 'number') rt.lastOutEndMs = Math.max(rt.lastOutEndMs, d.end_ms);
   }
 
   private flushOut(conv: Conversation, rt: LiveRuntime) {
@@ -274,6 +332,12 @@ export class LiveAdapter {
     clearTimeout(rt.exactTimer);
     // 出力transcriptが来ない場合の保険（話し終わりを検知できなくても詰まらせない）
     rt.exactTimer = setTimeout(() => this.exactDone(conv, rt), 10000);
+    if (delegationId) {
+      // 遅延計測：このターンの応答（委任への答え）を送った時刻
+      rt.answerEventId = eventId;
+      rt.outEndAtSend = rt.lastOutEndMs;
+      this.ctl.turnMark(conv, 'speech_sent');
+    } else if (text === FILLER_TEXT) this.ctl.turnMark(conv, 'filler_sent');
     this.send(conv, rt, { type: 'session.instructions.append', event_id: eventId, delegation_id: delegationId, content: `今すぐ、次の内容を省略せずそのまま伝えてください：「${text}」` });
   }
 

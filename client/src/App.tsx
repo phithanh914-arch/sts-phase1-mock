@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { startLive, type LiveHandle } from './live';
-import type { Conv, Fact, Job } from './types';
+import type { Conv, Fact, Job, Turn } from './types';
 
 const LABEL: Record<string, string> = {
   emergency_signal: '緊急信号', unsafe_to_continue_signal: '安全上の懸念', towing_requested: 'レッカー希望', physically_drivable: '走行可否',
@@ -21,6 +21,7 @@ interface Cfg {
   liveUsage: { activeSessions: number; sessionsToday: number; maxPerDay: number; maxSessionSeconds: number } | null;
   faults: { rpa: string; transfer: string }; cases: { id: string; title: string; expected: string }[]; evalMaxLlmRuns: number;
   summary: Record<string, unknown>;
+  profiles: Record<string, string>; defaultProfile: string; supportedEfforts: Record<string, string[]>; benchCases: number; benchMaxLlmCalls: number;
 }
 
 export function App() {
@@ -78,6 +79,7 @@ function CallView({ cfg, reloadCfg }: { cfg: Cfg; reloadCfg: () => void }) {
   const [voice, setVoice] = useState(cfg.liveVoice);
   const [speed, setSpeed] = useState(cfg.defaultSpeed);
   const [tone, setTone] = useState(cfg.defaultTone);
+  const [profile, setProfile] = useState(cfg.defaultProfile);
   const [text, setText] = useState('');
   const [status, setStatus] = useState('');
   const [muted, setMuted] = useState(false);
@@ -97,13 +99,13 @@ function CallView({ cfg, reloadCfg }: { cfg: Cfg; reloadCfg: () => void }) {
   useEffect(() => { logRef.current?.scrollTo(0, logRef.current.scrollHeight); }, [conv?.utterances.length]);
 
   const startText = async () => {
-    const c = await api<Conv>('/conversations', { json: { brain } });
+    const c = await api<Conv>('/conversations', { json: { brain, profile } });
     setConv(c); follow(c.id); setStatus('テキストモードで開始');
   };
   const startVoice = async () => {
     setBusy(true); setStatus('接続中…（マイクの使用を許可してください）');
     try {
-      const h = await startLive({ brain, voice, speed, tone, audio: audioRef.current!, onStatus: setStatus, onClosed: (r) => { setStatus(`通話終了（${r}）`); liveRef.current = null; reloadCfg(); } });
+      const h = await startLive({ brain, voice, speed, tone, profile, audio: audioRef.current!, onStatus: setStatus, onClosed: (r) => { setStatus(`通話終了（${r}）`); liveRef.current = null; reloadCfg(); } });
       liveRef.current = h; follow(h.conversationId); setMuted(false);
     } catch (e) { setStatus(`開始できません: ${(e as Error).message}`); }
     setBusy(false);
@@ -149,6 +151,13 @@ function CallView({ cfg, reloadCfg }: { cfg: Cfg; reloadCfg: () => void }) {
             <label>トーン：
               <select value={tone} onChange={(e) => setTone(e.target.value)} disabled={!ended}>
                 {Object.entries(cfg.speechTones).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="row">
+            <label>応答速度の構成：
+              <select value={profile} onChange={(e) => setProfile(e.target.value)} disabled={!ended}>
+                {Object.entries(cfg.profiles).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
               </select>
             </label>
           </div>
@@ -235,8 +244,11 @@ function Panels({ conv, act }: { conv: Conv; act: (p: string) => void }) {
           <div><small>登録</small><b className={`st ${conv.registrationState}`}>{conv.registrationState}</b></div>
           <div><small>版</small><b>v{conv.version}</b></div>
           <div><small>Brain</small><b className="small">{conv.brainName}</b></div>
+          <div><small>構成</small><b className="small">{conv.profile}</b></div>
         </div>
       </div>
+
+      <LatencyPanel turns={conv.turns ?? []} mode={conv.mode} />
 
       <div className="card">
         <h3>対象判定 <span className={`route ${conv.route.route}`}>{ROUTE_JA[conv.route.route]}</span></h3>
@@ -256,7 +268,7 @@ function Panels({ conv, act }: { conv: Conv; act: (p: string) => void }) {
       </div>
 
       <div className="card">
-        <h3>会話目的・不足項目 <span className="muted small">（Brainが選択。固定順ではない）</span></h3>
+        <h3>会話目的・不足項目 <span className="muted small">{conv.profile === 'baseline' ? '（Brainが選択。固定順ではない）' : '（次の質問はコードが選択。Brainは発話の理解に専念）'}</span></h3>
         <p className="small"><b>次の目的：</b>{conv.nextIntent || '—'}</p>
         <p className="small"><b>確認したい情報：</b>{conv.desiredInformation.map((k) => LABEL[k] ?? k).join('、') || '—'}</p>
         <p className="small"><b>判断メモ：</b>{conv.lastBriefReason || '—'}</p>
@@ -309,7 +321,7 @@ function Panels({ conv, act }: { conv: Conv; act: (p: string) => void }) {
         {showDebug && (
           <>
             <h4>分析履歴（base_state_version / watermark）</h4>
-            <pre>{conv.analyses.map((a) => `${a.analysisId} ${a.status} base=v${a.baseStateVersion} wm=${a.inputWatermark} ${a.latencyMs ?? '-'}ms ${a.trigger} changed=${(a.changedKeys ?? []).join(',')} rejected=${JSON.stringify(a.rejectedProposals ?? [])}`).join('\n')}</pre>
+            <pre>{conv.analyses.map((a) => `${a.analysisId} ${a.status} ${a.brain ?? ''}${a.fastPathRule ? `(${a.fastPathRule})` : ''} base=v${a.baseStateVersion} wm=${a.inputWatermark} ${a.latencyMs ?? '-'}ms ${a.trigger} changed=${(a.changedKeys ?? []).join(',')} rejected=${JSON.stringify(a.rejectedProposals ?? [])}${a.usage ? ` tokens in=${a.usage.inputTokens} out=${a.usage.outputTokens}` : ''}${a.shadow ? ` shadow=${a.shadow.status} ${(a.shadow.diffs ?? []).join(',')}` : ''}`).join('\n')}</pre>
             <h4>監査ログ</h4>
             <pre>{conv.audit.map((a) => `${a.at.slice(11, 19)} ${a.event} ${a.detail ? JSON.stringify(a.detail) : ''}`).join('\n')}</pre>
             <h4>会話JSON</h4>
@@ -321,11 +333,111 @@ function Panels({ conv, act }: { conv: Conv; act: (p: string) => void }) {
   );
 }
 
+const ms = (v: number | undefined | null) => (v === undefined || v === null ? '—' : v < 1000 ? `${Math.round(v)}ms` : `${(v / 1000).toFixed(1)}s`);
+const p = (xs: number[], q: number) => { const v = [...xs].sort((a, b) => a - b); return v.length ? v[Math.min(v.length - 1, Math.ceil((q / 100) * v.length) - 1)] : undefined; };
+
+/** ターンごとの応答時間（D18）。live=実機音声（Liveの時間軸）、text=文字入力（音声なし）。両者を混同しない */
+function LatencyPanel({ turns, mode }: { turns: Turn[]; mode: string }) {
+  const done = turns.filter((t) => t.status === 'answered');
+  const total = done.map((t) => t.durations.total_ms).filter((x) => x !== undefined);
+  const heard = done.map((t) => t.durations.client_playback_ms).filter((x) => x !== undefined);
+  const fp = turns.filter((t) => t.fastPath !== 'off');
+  const live = mode === 'live';
+  return (
+    <div className="card">
+      <h3>応答時間 <span className="muted small">{mode === 'live' ? '（発話終了→次の質問の音声開始。サーバ計測＝Liveの時間軸／耳＝ブラウザ計測・近似）' : '（文字入力。音声を含まないため実機の値ではない）'}</span></h3>
+      <p className="small">
+        サーバ計測 P50 {ms(p(total, 50))} ・P95 {ms(p(total, 95))}（{total.length}件）
+        {mode === 'live' && <> ／ 耳で聞こえるまで P50 {ms(p(heard, 50))} ・P95 {ms(p(heard, 95))}（{heard.length}件）</>}
+        {fp.length > 0 && <> ／ Fast Path {fp.filter((t) => t.fastPath === 'hit').length}/{fp.length}</>}
+      </p>
+      {turns.length > 0 && (
+        <table className="facts small latency"><thead><tr><th>ターン</th><th>経路</th><th>合計</th>{live && <><th>耳</th><th>最初の音</th><th>区切り検知</th></>}<th>Brain</th>{live && <><th>送信待ち</th><th>音声開始</th></>}</tr></thead><tbody>
+          {turns.slice(-12).map((t) => (
+            <tr key={t.turnId} title={`${t.brain} effort=${t.effort ?? '-'} ${t.fallbackReason ?? ''} ${t.errors.join(',')}`}>
+              <td>{t.turnId}{t.status !== 'answered' ? `（${t.status === 'open' ? '処理中' : t.status === 'interrupted' ? '割込み' : '中断'}）` : ''}</td>
+              <td>{t.fastPath === 'hit' ? `Fast Path（${t.fastPathRule}）` : t.analyses ? `LLM${t.fastPath === 'miss' ? `（${t.fallbackReason?.split(':')[0]}）` : ''}` : '—'}</td>
+              <td><b>{ms(t.durations.total_ms)}</b></td>
+              {live && <><td>{ms(t.durations.client_playback_ms)}</td><td>{ms(t.durations.first_sound_ms ?? t.durations.client_first_sound_ms)}</td><td>{ms(t.durations.endpointing_ms)}</td></>}
+              <td>{ms(t.durations.brain_ms ?? t.durations.fastpath_ms)}</td>
+              {live && <><td>{ms(t.durations.send_wait_ms)}</td><td>{ms(t.durations.audio_start_ms)}</td></>}
+            </tr>
+          ))}
+        </tbody></table>
+      )}
+    </div>
+  );
+}
+
 interface EvalRun { id: string; status: string; brain: string; total: number; note: string; results: { id: string; title: string; expected: string; repetition: number; pass: boolean; ms: number; error?: string; checks: { name: string; pass: boolean; detail?: string }[] }[] }
 
 function EvalView({ cfg }: { cfg: Cfg }) {
+  return (<><AcceptanceView cfg={cfg} /><BenchView cfg={cfg} /></>);
+}
+
+interface BenchResult { id: string; category: string; profile: string; effort: string | null; fastPath: string; failures: string[]; totalMs: number | null; brainMs: number | null }
+interface Stat { n: number; p50: number | null; p95: number | null }
+interface BenchRunView { id: string; status: string; note: string; expected: number; results: BenchResult[]; summary: { profile: string; effort: string | null; runs: number; total: Stat; brain: Stat; fastPathRate: number | null; fastPathWrong: number; accuracy: number; safetyFailures: number; costUsd: number | null; llmCalls: number }[] }
+
+/** 1ターン比較ベンチ（D19）：同じ発話データでA/B/Cを比べる（テキスト経路・音声なし） */
+function BenchView({ cfg }: { cfg: Cfg }) {
+  const llm = Object.keys(cfg.brains).find((k) => k !== 'rule') ?? 'rule';
+  const [brain, setBrain] = useState(llm);
+  const [profiles, setProfiles] = useState<string[]>(['baseline', 'lightweight', 'hybrid']);
+  const [efforts, setEfforts] = useState<string[]>([]);
+  const [run, setRun] = useState<BenchRunView | null>(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    if (!run || run.status !== 'running') return;
+    const t = setInterval(async () => setRun(await api<BenchRunView>(`/bench/${run.id}`)), 1000);
+    return () => clearInterval(t);
+  }, [run?.id, run?.status]);
+  const est = profiles.length * Math.max(1, efforts.length) * cfg.benchCases;
+  const toggle = (xs: string[], x: string, on: boolean) => (on ? [...xs, x] : xs.filter((y) => y !== x));
+  const start = async () => { setErr(''); try { setRun(await api<BenchRunView>('/bench/run', { json: { brain, profiles, efforts } })); } catch (e) { setErr((e as Error).message); } };
+  return (
+    <div className="card wide">
+      <h3>応答速度の比較（A改善前／B軽量化／C Hybrid）</h3>
+      <p className="small muted">同じ合成発話{cfg.benchCases}件で、Brain処理時間・Fast Path適用率・事実抽出の正確性・安全上の判定を比べます。文字入力での計測のため、音声（GPT-Live）を含む実機の応答時間とは別の値です。LLMはAPI費用が発生します（最大{cfg.benchMaxLlmCalls}回）。</p>
+      <div className="row">
+        <label>Brain：<select value={brain} onChange={(e) => setBrain(e.target.value)}>{Object.keys(cfg.brains).map((k) => <option key={k} value={k}>{k === 'rule' ? 'Deterministic比較' : `LLM (${cfg.brains[k]})`}</option>)}</select></label>
+        {Object.entries(cfg.profiles).map(([k, l]) => <label key={k} className="chip"><input type="checkbox" checked={profiles.includes(k)} onChange={(e) => setProfiles(toggle(profiles, k, e.target.checked))} />{l.split('（')[0]}</label>)}
+      </div>
+      <div className="row">
+        <span className="small">推論量の比較（未選択なら BRAIN_REASONING_EFFORT）：</span>
+        {['none', 'low', 'medium'].map((k) => <label key={k} className="chip"><input type="checkbox" checked={efforts.includes(k)} onChange={(e) => setEfforts(toggle(efforts, k, e.target.checked))} />{k}</label>)}
+        <span className="small muted">実行見込み 最大{est}回</span>
+        <button onClick={start} disabled={run?.status === 'running' || !profiles.length}>比較を実行</button>
+      </div>
+      {err && <p className="err">{err}</p>}
+      {run && (
+        <>
+          <p><b>{run.status === 'running' ? '実行中…' : '完了'}</b> {run.note} ・{run.results.length}/{run.expected}</p>
+          <table className="facts eval"><thead><tr><th>構成</th><th>推論量</th><th>件数</th><th>応答P50</th><th>応答P95</th><th>Brain P50</th><th>Brain P95</th><th>Fast Path適用率</th><th>Fast Path誤判定</th><th>正確性</th><th>安全上の失敗</th><th>推定費用</th></tr></thead><tbody>
+            {(run.summary ?? []).map((x) => (
+              <tr key={`${x.profile}-${x.effort}`}>
+                <td>{cfg.profiles[x.profile]?.split('（')[0] ?? x.profile}</td><td>{x.effort ?? '-'}</td><td>{x.runs}</td>
+                <td>{ms(x.total.p50)}</td><td>{ms(x.total.p95)}</td><td>{ms(x.brain.p50)}</td><td>{ms(x.brain.p95)}</td>
+                <td>{x.fastPathRate === null ? '0%' : `${Math.round(x.fastPathRate * 100)}%`}</td><td className={x.fastPathWrong ? 'err' : ''}>{x.fastPathWrong}</td>
+                <td>{Math.round(x.accuracy * 100)}%</td><td className={x.safetyFailures ? 'err' : 'ok'}>{x.safetyFailures}</td><td>{x.costUsd === null ? '不明' : `$${x.costUsd.toFixed(4)}`}</td>
+              </tr>
+            ))}
+          </tbody></table>
+          <details><summary className="small">失敗したケース（{run.results.filter((r) => r.failures.length).length}件）</summary>
+            <table className="facts eval small"><tbody>
+              {run.results.filter((r) => r.failures.length).map((r, i) => <tr key={i}><td>{r.id}</td><td>{r.category}</td><td>{r.profile}</td><td>{r.effort ?? '-'}</td><td>{r.fastPath}</td><td className="err">{r.failures.join(' / ')}</td></tr>)}
+            </tbody></table>
+          </details>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AcceptanceView({ cfg }: { cfg: Cfg }) {
   const [brain, setBrain] = useState('rule');
   const [reps, setReps] = useState(3);
+  const [profile, setProfile] = useState(cfg.defaultProfile);
   const [sel, setSel] = useState<string[]>([]);
   const [run, setRun] = useState<EvalRun | null>(null);
   const [err, setErr] = useState('');
@@ -336,15 +448,16 @@ function EvalView({ cfg }: { cfg: Cfg }) {
   }, [run?.id, run?.status]);
   const start = async () => {
     setErr('');
-    try { setRun(await api<EvalRun>('/eval/run', { json: { brain, repetitions: reps, ids: sel } })); } catch (e) { setErr((e as Error).message); }
+    try { setRun(await api<EvalRun>('/eval/run', { json: { brain, repetitions: reps, ids: sel, profile } })); } catch (e) { setErr((e as Error).message); }
   };
   const passCount = run ? new Set(run.results.filter((r) => r.pass).map((r) => `${r.id}#${r.repetition}`)).size : 0;
   return (
     <div className="card wide">
-      <h3>受入テスト（acceptance-cases.json T01〜T36）</h3>
+      <h3>受入テスト（acceptance-cases.json T01〜T39）</h3>
       <p className="small muted">テキスト経路で業務ロジック（振り分け・ゲート・RPA状態）を自動判定します。音声品質・GPT-Liveの実際の発話内容は対象外のため、通話画面で人が確認してください。LLM Brainでの実行はAPI費用が発生します（最大{cfg.evalMaxLlmRuns}回）。</p>
       <div className="row">
         <label>Brain：<select value={brain} onChange={(e) => setBrain(e.target.value)}>{Object.keys(cfg.brains).map((k) => <option key={k} value={k}>{k === 'rule' ? 'Deterministic比較' : `LLM (${cfg.brains[k]})`}</option>)}</select></label>
+        <label>構成：<select value={profile} onChange={(e) => setProfile(e.target.value)}>{Object.entries(cfg.profiles).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label>
         <label>繰返し：<input type="number" min={1} max={5} value={reps} onChange={(e) => setReps(Number(e.target.value))} style={{ width: 60 }} /></label>
         <button onClick={start} disabled={run?.status === 'running'}>実行</button>
         <span className="small muted">対象：{sel.length ? sel.join(',') : '全件'}</span>

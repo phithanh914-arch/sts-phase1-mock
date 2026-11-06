@@ -6,6 +6,7 @@ import { SessionController, type SpeechDirective, type SpeechSink } from '../ses
 import type { Conversation } from '../session/conversation.js';
 import type { ReceptionBrain } from '../brain/types.js';
 import type { FaultConfig } from '../adapters/faults.js';
+import type { ProfileName } from '../session/latency.js';
 
 export class TextSink implements SpeechSink {
   constructor(private ctl: () => SessionController) {}
@@ -19,8 +20,8 @@ export interface Check { name: string; pass: boolean; detail?: string }
 export class Harness {
   ctl: SessionController;
   conv: Conversation;
-  constructor(brains: Record<string, ReceptionBrain>, brain: string, opts: { brainTimeoutMs?: number; callWaitLimitMs?: number; faults?: Partial<FaultConfig> } = {}) {
-    this.ctl = new SessionController({ brains, defaultBrain: brain, brainTimeoutMs: opts.brainTimeoutMs ?? 30000, callWaitLimitMs: opts.callWaitLimitMs ?? 600, today: () => '2026-11-06' });
+  constructor(brains: Record<string, ReceptionBrain>, brain: string, opts: { brainTimeoutMs?: number; callWaitLimitMs?: number; faults?: Partial<FaultConfig>; profile?: ProfileName } = {}) {
+    this.ctl = new SessionController({ brains, defaultBrain: brain, brainTimeoutMs: opts.brainTimeoutMs ?? 30000, callWaitLimitMs: opts.callWaitLimitMs ?? 600, today: () => '2026-11-06', defaultProfile: opts.profile ?? 'baseline' });
     this.ctl.faults = { ...this.ctl.faults, rpaDurationMs: 150, rpaDelayMs: 2500, transferDelayMs: 60, ...opts.faults };
     this.conv = this.ctl.create('text', new TextSink(() => this.ctl), brain);
   }

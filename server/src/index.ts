@@ -13,6 +13,9 @@ import { CASES, runCases, type CaseResult, type MakeHarness } from './eval/cases
 import { LiveAdapter } from './live/liveAdapter.js';
 import { SPEECH_SPEEDS, SPEECH_TONES, DEFAULT_SPEED, DEFAULT_TONE } from './live/instructions.js';
 import type { Conversation } from './session/conversation.js';
+import { PROFILES, resolveProfile, summarize, type ProfileName } from './session/latency.js';
+import { SUPPORTED_EFFORTS } from './brain/pricing.js';
+import { benchCallEstimate, runTurnBench, summarizeBench, TURN_CASES, type TurnCaseResult } from './eval/turnBench.js';
 
 if (config.production && !config.appPassword) {
   console.error('APP_PASSWORD が未設定です。外部公開時はパスワード必須のため起動しません。');
@@ -25,7 +28,7 @@ const brains: Record<string, ReceptionBrain> = { rule: new RuleBrain() };
 if (config.openaiApiKey) config.brainModels.forEach((m, i) => { brains[i === 0 ? 'llm' : `llm${i + 1}`] = new OpenAIBrain(m, config.openaiApiKey, config.brainTimeoutMs, config.brainReasoningEffort); });
 const defaultBrain = brains.llm ? 'llm' : 'rule';
 
-const ctl = new SessionController({ brains, defaultBrain, dataDir: config.dataDir, brainTimeoutMs: config.brainTimeoutMs, callWaitLimitMs: config.callWaitLimitMs });
+const ctl = new SessionController({ brains, defaultBrain, dataDir: config.dataDir, brainTimeoutMs: config.brainTimeoutMs, callWaitLimitMs: config.callWaitLimitMs, defaultProfile: config.latencyProfile, fastPathShadow: config.fastPathShadow });
 const live = config.openaiApiKey
   ? new LiveAdapter({ apiKey: config.openaiApiKey, model: config.liveModel, voice: config.liveVoice, voices: config.liveVoices, maxSessionSeconds: config.liveMaxSessionSeconds, maxConcurrent: config.liveMaxConcurrent, maxSessionsPerDay: config.liveMaxSessionsPerDay, turnGapMs: config.liveTurnGapMs, delegationWaitMs: config.liveDelegationWaitMs, fillerAfterMs: config.liveFillerAfterMs }, ctl)
   : null;
@@ -95,6 +98,11 @@ api.get('/config', (_req, res) => {
     summary: configSummary(),
     cases: CASES.map((c) => ({ id: c.id, title: c.title, expected: c.expected })),
     evalMaxLlmRuns: config.evalMaxLlmRuns,
+    profiles: Object.fromEntries(Object.values(PROFILES).map((p) => [p.name, p.label])),
+    defaultProfile: config.latencyProfile,
+    supportedEfforts: SUPPORTED_EFFORTS,
+    benchCases: TURN_CASES.length,
+    benchMaxLlmCalls: config.benchMaxLlmCalls,
   });
 });
 
@@ -110,7 +118,7 @@ api.get('/conversations', (_req, res) => {
 });
 
 api.post('/conversations', (req, res) => {
-  const c = ctl.create('text', new TextSink(() => ctl), typeof req.body?.brain === 'string' ? req.body.brain : undefined);
+  const c = ctl.create('text', new TextSink(() => ctl), typeof req.body?.brain === 'string' ? req.body.brain : undefined, req.body?.profile);
   res.json(c);
 });
 
@@ -158,6 +166,21 @@ api.post('/conversations/:id/reconcile', (req, res) => { const c = getConv(req, 
 api.post('/conversations/:id/retry', (req, res) => { const c = getConv(req, res); if (c) res.json({ ok: ctl.retry(c) }); });
 api.post('/conversations/:id/resubmit', (req, res) => { const c = getConv(req, res); if (c) res.json(ctl.resubmitSameJob(c) ?? { error: 'no job' }); });
 
+// ブラウザが測った「顧客の声が止んでからAIの音声が聞こえ始めるまで」（ms）。時間の値だけを受け取る（音声そのものは送らない）
+api.post('/conversations/:id/client-timing', (req, res) => {
+  const c = getConv(req, res);
+  if (!c) return;
+  const v = Number(req.body?.playbackLatencyMs);
+  if (!Number.isFinite(v) || v < 0 || v > 60000) return res.status(400).json({ error: 'playbackLatencyMs (0-60000) が必要です' });
+  res.json({ attached: ctl.addClientOnset(c, v) });
+});
+
+// 遅延の集計（このサーバが起動してからの会話。再起動で消える）
+api.get('/metrics/latency', (_req, res) => {
+  const turns = [...ctl.conversations.values()].flatMap((c) => c.turns);
+  res.json({ note: 'live=実機音声の計測（Liveの時間軸）／text=文字入力（音声なし）。混同しないこと', turns: turns.length, summary: summarize(turns) });
+});
+
 api.get('/core', (_req, res) => res.json({ notice: 'MOCK：模擬基幹の登録台帳（実基幹ではない）', records: ctl.core.all() }));
 
 api.post('/live/session', async (req, res) => {
@@ -165,7 +188,7 @@ api.post('/live/session', async (req, res) => {
   const sdp = req.body?.sdp;
   if (typeof sdp !== 'string' || !sdp.trim()) return res.status(400).json({ error: 'SDP offer が必要です' });
   try {
-    const r = await live.start(sdp, typeof req.body?.brain === 'string' ? req.body.brain : undefined, typeof req.body?.voice === 'string' ? req.body.voice : undefined, { speed: req.body?.speed, tone: req.body?.tone });
+    const r = await live.start(sdp, typeof req.body?.brain === 'string' ? req.body.brain : undefined, typeof req.body?.voice === 'string' ? req.body.voice : undefined, { speed: req.body?.speed, tone: req.body?.tone }, req.body?.profile);
     res.status(201).json(r);
   } catch (e) {
     const err = e as { status?: number; message?: string };
@@ -186,9 +209,11 @@ api.post('/eval/run', (req, res) => {
   if ([...evalRuns.values()].some((r) => r.status === 'running')) return res.status(409).json({ error: '別の評価を実行中です' });
   const run: EvalRun = { id: `EVAL-${randomUUID().slice(0, 8)}`, brain, status: 'running', startedAt: new Date().toISOString(), results: [], total, note: brain === 'rule' ? 'Deterministic比較モード（API不使用）' : `LLM Brain: ${brains[brain].name}（API費用が発生）` };
   evalRuns.set(run.id, run);
+  const profile = resolveProfile(req.body?.profile, config.latencyProfile).name;
+  run.note += ` / ${PROFILES[profile].label}`;
   const make: MakeHarness = (opts = {}) => {
     const b = opts.wrapBrain ? opts.wrapBrain(brains[brain]) : brains[brain];
-    return new Harness({ [brain]: b }, brain, { brainTimeoutMs: opts.brainTimeoutMs ?? (brain === 'rule' ? 30000 : config.brainTimeoutMs), ...opts });
+    return new Harness({ [brain]: b }, brain, { brainTimeoutMs: opts.brainTimeoutMs ?? (brain === 'rule' ? 30000 : config.brainTimeoutMs), profile, ...opts });
   };
   void runCases(make, ids, reps, (r) => run.results.push(r)).finally(() => { run.status = 'done'; });
   res.json(run);
@@ -197,6 +222,29 @@ api.get('/eval/:id', (req, res) => {
   const r = evalRuns.get(String(req.params.id));
   if (!r) return res.status(404).json({ error: 'not_found' });
   res.json(r);
+});
+
+// ───────── 1ターン比較ベンチ（A/B/C、テキスト経路、画面から） ─────────
+interface BenchRun { id: string; brain: string; status: 'running' | 'done'; startedAt: string; finishedAt?: string; expected: number; results: TurnCaseResult[]; note: string }
+const benchRuns = new Map<string, BenchRun>();
+api.post('/bench/run', (req, res) => {
+  const brain = typeof req.body?.brain === 'string' && brains[req.body.brain] ? req.body.brain : 'rule';
+  const profiles = (Array.isArray(req.body?.profiles) ? req.body.profiles : ['baseline', 'lightweight', 'hybrid']).filter((p: unknown): p is ProfileName => typeof p === 'string' && Object.hasOwn(PROFILES, p));
+  const efforts: string[] = (Array.isArray(req.body?.efforts) ? req.body.efforts : []).filter((e: unknown): e is string => typeof e === 'string' && ['none', 'minimal', 'low', 'medium', 'high'].includes(e));
+  const reps = Math.min(Math.max(Number(req.body?.repetitions) || 1, 1), 3);
+  if (!profiles.length) return res.status(400).json({ error: 'profiles が空です' });
+  const expected = benchCallEstimate(profiles, efforts, null, reps);
+  if (brain !== 'rule' && expected > config.benchMaxLlmCalls) return res.status(400).json({ error: `LLM呼び出しは最大${config.benchMaxLlmCalls}回までです（見込み: ${expected}）` });
+  if ([...benchRuns.values()].some((r) => r.status === 'running') || [...evalRuns.values()].some((r) => r.status === 'running')) return res.status(409).json({ error: '別の評価を実行中です' });
+  const run: BenchRun = { id: `BENCH-${randomUUID().slice(0, 8)}`, brain, status: 'running', startedAt: new Date().toISOString(), expected, results: [], note: brain === 'rule' ? 'Deterministic（API不使用）' : `LLM Brain: ${brains[brain].name}（API費用が発生）` };
+  benchRuns.set(run.id, run);
+  void runTurnBench(brains[brain], { profiles, efforts, reps, brainTimeoutMs: config.brainTimeoutMs, onResult: (r) => run.results.push(r) }).finally(() => { run.status = 'done'; run.finishedAt = new Date().toISOString(); });
+  res.json({ ...run, summary: [] });
+});
+api.get('/bench/:id', (req, res) => {
+  const r = benchRuns.get(String(req.params.id));
+  if (!r) return res.status(404).json({ error: 'not_found' });
+  res.json({ ...r, summary: summarizeBench(r.results) });
 });
 
 app.use('/api', api);

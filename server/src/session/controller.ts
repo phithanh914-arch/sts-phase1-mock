@@ -8,14 +8,18 @@ import { join } from 'node:path';
 import { applyProposal, factsForPrompt, missingForRegistration, unresolvableRequired, validateProposal } from '../domain/facts.js';
 import { decideRoute } from '../domain/routing.js';
 import { buildReadback, MAPPING_VERSION, makeSnapshot, mapToRpaPayload, SCHEMA_VERSION } from '../domain/snapshot.js';
-import type { Confirmation, Utterance } from '../domain/types.js';
+import type { Confirmation, FactValue, Utterance } from '../domain/types.js';
 import { PolicyAdapter } from '../adapters/policy.js';
 import { createRpaAdapter, MockCore, newJobId, type JobRecord, type RpaJob } from '../adapters/rpa.js';
 import { createTelephonyAdapter, type HandoffPackage, type TransferTarget } from '../adapters/telephony.js';
 import { defaultFaults, type FaultConfig } from '../adapters/faults.js';
 import { ActionGate } from '../gate/actionGate.js';
-import type { ReceptionBrain, ReceptionPlan } from '../brain/types.js';
+import type { BrainContext, ReceptionBrain, ReceptionPlan } from '../brain/types.js';
+import type { FactProposal } from '../domain/facts.js';
 import { Conversation, type AnalysisRecord } from './conversation.js';
+import { GREETING_QUESTION_KEY, NARRATIVE_QUESTION, QUESTION_TEXT, SAFETY_QUESTION, selectNextQuestion } from '../domain/questions.js';
+import { questionWasSpoken, tryFastPath } from '../brain/fastPath.js';
+import { computeDurations, resolveProfile, type MarkName, type ProfileName, type TurnTrace } from './latency.js';
 
 export type SpeechKind = 'greeting' | 'question' | 'readback' | 'handoff' | 'emergency' | 'registration' | 'notice';
 
@@ -25,6 +29,8 @@ export interface SpeechDirective {
   /** true: 文言どおりに話させる（ゲート済みの案内・読上げ）。false: 言い換え可。 */
   exact: boolean;
   tag?: string;
+  /** コードが選んだ質問のID（Fast Pathの前提。LLMが作った質問はnull/未指定） */
+  questionKey?: string | null;
 }
 
 export interface SpeechSink {
@@ -42,6 +48,10 @@ export interface ControllerOptions {
   callWaitLimitMs?: number;
   maxClarify?: number;
   today?: () => string;
+  /** 遅延改善のプロファイル既定値（D16）。会話ごとに上書き可 */
+  defaultProfile?: ProfileName;
+  /** Fast Pathで確定した発話を、裏でLLMにも分析させて一致を記録する（状態には適用しない）。API費用が発生 */
+  fastPathShadow?: boolean;
 }
 
 const POLICY_KEYS = new Set(['policy_number', 'vehicle_plate', 'caller_name_kana', 'callback_phone']);
@@ -71,6 +81,8 @@ export class SessionController {
       maxClarify: 6,
       today: todayJST,
       dataDir: null,
+      defaultProfile: 'baseline',
+      fastPathShadow: false,
       ...opts,
     } as typeof this.opts;
     if (this.opts.dataDir) mkdirSync(this.opts.dataDir, { recursive: true });
@@ -89,13 +101,14 @@ export class SessionController {
   }
 
   // ───────── 会話の生成・購読 ─────────
-  create(mode: 'text' | 'live', sink: SpeechSink, brainName?: string): Conversation {
+  create(mode: 'text' | 'live', sink: SpeechSink, brainName?: string, profileName?: unknown): Conversation {
     const name = brainName && this.opts.brains[brainName] ? brainName : this.opts.defaultBrain;
     const c = new Conversation(`CONV-${randomUUID().slice(0, 8)}`, `MOCK-CLAIM-${randomUUID().slice(0, 8)}`, mode, name, this.rpa.jobs);
+    c.profile = resolveProfile(profileName, this.opts.defaultProfile);
     this.conversations.set(c.id, c);
     this.sinks.set(c.id, sink);
-    c.log('conversation_created', { mode, brain: name });
-    if (mode === 'text') this.speak(c, { kind: 'greeting', text: GREETING, exact: true }, null, true);
+    c.log('conversation_created', { mode, brain: name, profile: c.profile.name });
+    if (mode === 'text') this.speak(c, { kind: 'greeting', text: GREETING, exact: true, questionKey: GREETING_QUESTION_KEY }, null, true);
     this.changed(c);
     return c;
   }
@@ -131,7 +144,9 @@ export class SessionController {
   /** 顧客発話を追加し分析を要求（テキスト入力） */
   async customerSays(c: Conversation, text: string): Promise<void> {
     if (c.callState === 'ENDED') throw new Error('call ended');
+    this.turnMark(c, 'speech_end', true);
     this.addUtterance(c, { speaker: 'customer', text, kind: 'input', source: 'text' });
+    this.turnMark(c, 'utterance_flushed');
     await this.requestAnalysis(c, 'text_input', null);
   }
 
@@ -150,8 +165,14 @@ export class SessionController {
 
   private speak(c: Conversation, d: SpeechDirective, delegationId: string | null, solicited: boolean) {
     const sink = this.sinks.get(c.id);
-    if (d.kind === 'question' || d.kind === 'greeting') c.lastQuestion = d.text;
+    if (d.kind === 'question' || d.kind === 'greeting') {
+      c.lastQuestion = d.text;
+      c.lastQuestionKey = d.questionKey ?? null;
+      if (d.questionKey) c.askedCounts[d.questionKey] = (c.askedCounts[d.questionKey] ?? 0) + 1;
+    }
     c.log('speech_directive', { ...d, delegationId });
+    // テキストモードは表示＝発話。応答（solicited）の最初の発話でターンを閉じる
+    if (c.mode === 'text' && solicited) { this.turnMark(c, 'speech_sent'); this.closeTurn(c, 'answered'); }
     sink?.deliver(c, d, delegationId, solicited);
     if (c.mode === 'text' && d.kind === 'readback' && c.confirmation) this.markReadbackDelivered(c, c.confirmation.confirmationId);
     this.changed(c);
@@ -173,6 +194,45 @@ export class SessionController {
       return;
     }
     const brain = this.opts.brains[c.brainName];
+    const turn = this.turnMark(c, 'analysis_start');
+    if (turn) { turn.analyses += 1; turn.brain = brain.name; turn.effort = c.effortOverride !== undefined ? c.effortOverride : (brain as { defaultEffort?: string | null }).defaultEffort ?? null; }
+
+    // ── Fast Path（D17）：定型の短い回答はLLMを呼ばずにコードで確定（同じapplyPlan・ActionGateを通す）──
+    if (c.profile.fastPath) {
+      this.turnMark(c, 'fastpath_start');
+      const fp = tryFastPath({
+        lastQuestionKey: c.lastQuestionKey,
+        questionSpoken: questionWasSpoken(c.utterances, pending[0].id, c.lastQuestion),
+        pending,
+        confirmationPending: c.confirmation?.status === 'PENDING',
+        callActive: c.callState === 'ACTIVE',
+      });
+      this.turnMark(c, 'fastpath_end');
+      if (fp.hit) {
+        const rec: AnalysisRecord = {
+          analysisId: c.nextId('AN'), baseStateVersion: c.version, inputWatermark: pending[pending.length - 1].id, trigger, delegationId,
+          status: 'running', startedAt: new Date().toISOString(), brain: 'fast-path', fastPathRule: fp.rule, turnId: turn?.turnId, latencyMs: 0,
+        };
+        c.analyses.push(rec);
+        if (turn) { turn.fastPath = 'hit'; turn.fastPathRule = fp.rule; turn.brain = 'fast-path'; turn.effort = null; }
+        c.log('fast_path_applied', { rule: fp.rule, utterance: pending[0].id });
+        const plan: ReceptionPlan = {
+          analysisId: rec.analysisId, baseStateVersion: rec.baseStateVersion, inputWatermark: rec.inputWatermark,
+          factProposals: fp.proposals, scenarioHypotheses: [], riskSignals: [], requestedRoute: 'UNRESOLVED', confirmationResponse: 'none',
+          customerNeeds: [], nextIntent: 'code_selects_next_question', desiredInformation: [], suggestedSpeech: '', evidenceRefs: [pending[0].id],
+          briefReason: `fast_path:${fp.rule}`, brain: 'fast-path',
+        };
+        const shadowCtx = this.opts.fastPathShadow && brain.name !== 'deterministic-rule-brain' ? this.brainContext(c, rec) : null;
+        this.applyPlan(c, rec, plan, true);
+        this.changed(c);
+        if (shadowCtx) void this.runShadow(c, rec, brain, shadowCtx, fp.proposals);
+        return;
+      }
+      // 1ターンに複数回分析した場合、どれかでFast Pathが当たればhit（LLMも使ったかはanalysesとbrain_msで分かる）
+      if (turn && turn.fastPath !== 'hit') { turn.fastPath = 'miss'; turn.fallbackReason = fp.reason; }
+      c.log('fast_path_fallback', { reason: fp.reason });
+    }
+
     const rec: AnalysisRecord = {
       analysisId: c.nextId('AN'),
       baseStateVersion: c.version,
@@ -182,28 +242,14 @@ export class SessionController {
       status: 'running',
       startedAt: new Date().toISOString(),
       brain: brain.name,
+      turnId: turn?.turnId,
     };
     c.analyses.push(rec);
     c.analysisInFlight = true;
     this.changed(c);
     const t0 = Date.now();
-    const ctx = {
-      analysisId: rec.analysisId,
-      baseStateVersion: rec.baseStateVersion,
-      inputWatermark: rec.inputWatermark,
-      transcript: c.utterances.filter((u) => u.kind !== 'planned' && u.kind !== 'notice' && c.utterances.indexOf(u) <= c.utterances.findIndex((x) => x.id === rec.inputWatermark)),
-      newUtteranceIds: pending.map((u) => u.id),
-      facts: factsForPrompt(c.facts),
-      route: c.route.route,
-      routeReasons: c.route.reasons,
-      unresolvedEligibility: c.route.unresolved,
-      missingForRegistration: missingForRegistration(c.facts, c.policy.matched),
-      pendingConfirmation: c.confirmation?.status === 'PENDING' ? { confirmationId: c.confirmation.confirmationId, readbackText: c.confirmation.readbackText } : null,
-      callState: c.callState,
-      receptionState: c.receptionState,
-      registrationState: c.registrationState,
-      today: this.opts.today(),
-    };
+    const ctx = this.brainContext(c, rec);
+    this.turnMark(c, 'brain_request');
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<'timeout'>((res) => { timer = setTimeout(() => res('timeout'), this.opts.brainTimeoutMs); });
     const work = brain.analyze(ctx).then(
@@ -223,14 +269,26 @@ export class SessionController {
     clearTimeout(timer);
     rec.latencyMs = Date.now() - t0;
     c.analysisInFlight = false;
+    this.turnMark(c, 'brain_response', true);
+    if (result !== 'timeout' && 'plan' in result && result.plan.usage) {
+      rec.usage = result.plan.usage;
+      const t = this.currentTurn(c);
+      if (t) {
+        const u = result.plan.usage;
+        t.effort = u.effort;
+        t.usage = { inputTokens: (t.usage?.inputTokens ?? 0) + u.inputTokens, cachedTokens: (t.usage?.cachedTokens ?? 0) + u.cachedTokens, outputTokens: (t.usage?.outputTokens ?? 0) + u.outputTokens, costUsd: u.costUsd === null ? (t.usage?.costUsd ?? null) : (t.usage?.costUsd ?? 0) + u.costUsd };
+      }
+    }
     if (result === 'timeout') {
       rec.status = 'timed_out';
+      this.currentTurn(c)?.errors.push('brain_timeout');
       c.log('analysis_timeout', { analysisId: rec.analysisId });
       // 入力は未分析のまま残す（watermarkを進めない）。応答は遅延のお詫びのみ。
       this.speak(c, { kind: 'notice', text: '少々お待ちください。もう一度お話しいただけますか。', exact: false }, delegationId, true);
     } else if ('err' in result) {
       rec.status = 'error';
       rec.error = result.err;
+      this.currentTurn(c)?.errors.push('brain_error');
       c.log('analysis_error', { analysisId: rec.analysisId, error: result.err });
       this.speak(c, { kind: 'notice', text: '申し訳ありません、もう一度お話しいただけますか。', exact: false }, delegationId, true);
     } else {
@@ -247,7 +305,7 @@ export class SessionController {
   }
 
   /** 古い世代の結果を無条件に適用しない */
-  applyPlan(c: Conversation, rec: AnalysisRecord, plan: ReceptionPlan) {
+  applyPlan(c: Conversation, rec: AnalysisRecord, plan: ReceptionPlan, fromFastPath = false) {
     rec.plan = plan;
     if (plan.baseStateVersion !== c.version) {
       rec.status = 'stale_discarded';
@@ -281,7 +339,10 @@ export class SessionController {
     if (changedKeys.some((k) => POLICY_KEYS.has(k))) this.lookupPolicy(c);
 
     // 振り分け再判定
-    c.clarifyCount = this.recomputeRoute(c, true);
+    // 質問をコードが選ぶプロファイルでは「急ぎの状況」「事故の状況」の質問が増えるため、
+    // 試行上限は「何も進まなかった分析」だけを数える（D16）。従来プロファイルは従来どおり毎回数える
+    const progressed = changedKeys.length > 0 || fromFastPath;
+    c.clarifyCount = this.recomputeRoute(c, c.profile.questionMode === 'llm' || !progressed);
     const routeChanged = prevRoute !== c.route.route;
     if (routeChanged) c.log('route_changed', { from: prevRoute, to: c.route.route, reasons: c.route.reasons });
 
@@ -308,8 +369,16 @@ export class SessionController {
 
     if (!directives.length) {
       if (c.callState === 'TRANSFER_REQUESTED') directives.push({ kind: 'handoff', text: 'ただいま担当者におつなぎしています。少々お待ちください。', exact: false });
-      else if (plan.suggestedSpeech) directives.push({ kind: 'question', text: plan.suggestedSpeech, exact: false });
+      else if (c.profile.questionMode === 'code') {
+        // D16：次の質問はコードが選ぶ。LLMは曖昧な回答の聞き直し（clarifyQuestion）と短い前置き（speechPrefix）だけを出す
+        const prefix = plan.speechPrefix ?? '';
+        const nq = plan.clarifyQuestion ? null : selectNextQuestion({ facts: c.facts, route: c.route, policyMatched: c.policy.matched, asked: c.askedCounts });
+        if (plan.clarifyQuestion) directives.push({ kind: 'question', text: prefix + plan.clarifyQuestion, exact: false, questionKey: null });
+        else if (nq) directives.push({ kind: 'question', text: prefix + nq.text, exact: false, questionKey: nq.key });
+        else if (prefix) directives.push({ kind: 'notice', text: prefix, exact: false });
+      } else if (plan.suggestedSpeech) directives.push({ kind: 'question', text: plan.suggestedSpeech, exact: false });
     }
+    this.turnMark(c, 'decision_done', true);
     const delegationId = rec.delegationId;
     directives.forEach((d, i) => this.speak(c, d, i === 0 ? delegationId : null, i === 0 && !!delegationId || c.mode === 'text'));
     this.sinks.get(c.id)?.context?.(c, this.contextSummary(c), null);
@@ -319,6 +388,7 @@ export class SessionController {
     let n = c.clarifyCount;
     const pre = decideRoute(c.facts);
     if (countClarify) n = pre.route === 'UNRESOLVED' ? n + 1 : 0;
+    else if (pre.route !== 'UNRESOLVED') n = 0;
     c.route = decideRoute(c.facts, { clarifyAttemptsExceeded: n > this.opts.maxClarify });
     return n;
   }
@@ -612,6 +682,7 @@ export class SessionController {
     if (c.callState === 'ENDED') return;
     const prev = c.callState;
     c.callState = 'ENDED';
+    this.closeTurn(c, 'abandoned');
     // 最終確認前の切断：DRAFTのまま。新規登録しない。
     if (c.confirmation?.status === 'PENDING') this.invalidateConfirmation(c, `call_${reason}`);
     c.log('call_ended', { reason, prevCallState: prev, receptionState: c.receptionState, registrationState: c.registrationState });
@@ -622,8 +693,154 @@ export class SessionController {
   respondCurrent(c: Conversation, delegationId: string | null) {
     const d: SpeechDirective = c.confirmation?.status === 'PENDING'
       ? { kind: 'readback', text: c.confirmation.readbackText, exact: true, tag: `readback:${c.confirmation.confirmationId}` }
-      : { kind: 'question', text: c.callState === 'TRANSFER_REQUESTED' ? 'ただいま担当者におつなぎしています。' : c.lastQuestion || GREETING, exact: false };
+      : c.callState === 'TRANSFER_REQUESTED'
+        ? { kind: 'handoff', text: 'ただいま担当者におつなぎしています。', exact: false }
+        : { kind: 'question', text: c.lastQuestion || GREETING, exact: false, questionKey: c.lastQuestion ? c.lastQuestionKey : GREETING_QUESTION_KEY };
+    // 同じ質問の言い直しは「聞いた回数」に数えない
+    if (d.questionKey) c.askedCounts[d.questionKey] = Math.max(0, (c.askedCounts[d.questionKey] ?? 1) - 1);
     this.speak(c, d, delegationId, true);
+  }
+
+  // ───────── 評価用（1ターン比較ベンチ） ─────────
+  /** 前提となる事実を直接設定する（評価専用。evidenceは'SETUP'） */
+  primeFacts(c: Conversation, facts: Record<string, FactValue | { unknown: true }>) {
+    for (const [k, v] of Object.entries(facts)) {
+      const f = c.facts[k];
+      if (!f) throw new Error(`unknown fact ${k}`);
+      const unknown = typeof v === 'object' && v !== null;
+      f.value = unknown ? null : (v as FactValue);
+      f.status = unknown ? 'explicitly_unknown' : 'captured';
+      f.evidenceRefs = ['SETUP'];
+    }
+    this.lookupPolicy(c);
+    this.recomputeRoute(c, false);
+    this.changed(c);
+  }
+
+  /** 現在の状態で次に話す内容（質問または最終確認の読上げ）を話させる（評価専用） */
+  promptNext(c: Conversation, questionKey?: string) {
+    if (questionKey) {
+      const text = questionKey === SAFETY_QUESTION.key ? SAFETY_QUESTION.text : questionKey === NARRATIVE_QUESTION.key ? NARRATIVE_QUESTION.text : QUESTION_TEXT[questionKey];
+      if (!text) throw new Error(`unknown question ${questionKey}`);
+      this.speak(c, { kind: 'question', text, exact: false, questionKey }, null, false);
+      return;
+    }
+    const d: SpeechDirective[] = [];
+    if (c.route.route === 'SELF_SERVICE') this.maybePrepareConfirmation(c, d);
+    d.forEach((x) => this.speak(c, x, null, false));
+  }
+
+  private brainContext(c: Conversation, rec: AnalysisRecord): BrainContext {
+    const wmIdx = c.utterances.findIndex((x) => x.id === rec.inputWatermark);
+    const pending = c.unanalyzedCustomerUtterances();
+    return {
+      analysisId: rec.analysisId,
+      baseStateVersion: rec.baseStateVersion,
+      inputWatermark: rec.inputWatermark,
+      transcript: c.utterances.filter((u, i) => u.kind !== 'planned' && u.kind !== 'notice' && i <= wmIdx),
+      newUtteranceIds: pending.map((u) => u.id),
+      facts: factsForPrompt(c.facts),
+      route: c.route.route,
+      routeReasons: c.route.reasons,
+      unresolvedEligibility: c.route.unresolved,
+      missingForRegistration: missingForRegistration(c.facts, c.policy.matched),
+      pendingConfirmation: c.confirmation?.status === 'PENDING' ? { confirmationId: c.confirmation.confirmationId, readbackText: c.confirmation.readbackText } : null,
+      callState: c.callState,
+      receptionState: c.receptionState,
+      registrationState: c.registrationState,
+      today: this.opts.today(),
+      promptMode: c.profile.promptMode,
+      lastQuestionKey: c.lastQuestionKey,
+      ...(c.effortOverride !== undefined ? { reasoningEffort: c.effortOverride } : {}),
+    };
+  }
+
+  /** Shadow評価：Fast Pathで確定済みの発話をLLMでも分析し、一致/不一致を記録するだけ（状態は書き換えない） */
+  private async runShadow(c: Conversation, rec: AnalysisRecord, brain: ReceptionBrain, ctx: BrainContext, applied: FactProposal[]) {
+    rec.shadow = { status: 'running' };
+    const t0 = Date.now();
+    try {
+      const plan = await brain.analyze(ctx);
+      const diffs: string[] = [];
+      for (const p of applied) {
+        const q = plan.factProposals.find((x) => x.key === p.key);
+        if (!q) diffs.push(`${p.key}:llm_no_proposal`);
+        else if (q.value !== p.value || q.status !== p.status) diffs.push(`${p.key}:fast=${String(p.value)},llm=${String(q.value)}/${q.status}`);
+      }
+      // 安全側の見逃しがないか（Fast Pathが拾わなかった危険信号をLLMが出したか）
+      for (const r of plan.riskSignals) if (['emergency', 'unsafe', 'injury', 'human_request'].includes(r.kind)) diffs.push(`risk:${r.kind}`);
+      for (const q of plan.factProposals) if (!applied.some((p) => p.key === q.key) && ['injuries_present', 'emergency_signal', 'unsafe_to_continue_signal', 'towing_requested', 'human_requested'].includes(q.key) && q.value === true) diffs.push(`extra:${q.key}=true`);
+      rec.shadow = { status: diffs.length ? 'disagree' : 'agree', diffs, latencyMs: Date.now() - t0 };
+      c.log('fast_path_shadow', { analysisId: rec.analysisId, status: rec.shadow.status, diffs });
+    } catch (e) {
+      rec.shadow = { status: 'error', diffs: [e instanceof Error ? e.message.slice(0, 120) : 'error'], latencyMs: Date.now() - t0 };
+    }
+    this.changed(c);
+  }
+
+  // ───────── 遅延計測（D18） ─────────
+  /** 開いているターン（顧客の発話〜AIの次の発話の開始） */
+  currentTurn(c: Conversation): TurnTrace | undefined {
+    const t = c.turns[c.turns.length - 1];
+    return t && t.status === 'open' ? t : undefined;
+  }
+
+  /** ターンを開く（なければ作る）。顧客の入力が始まったとき・テキスト入力時に呼ぶ */
+  openTurn(c: Conversation): TurnTrace {
+    const cur = this.currentTurn(c);
+    if (cur) return cur;
+    const t: TurnTrace = {
+      turnId: `TURN-${c.turns.length + 1}`,
+      profile: c.profile.name,
+      brain: this.opts.brains[c.brainName]?.name ?? c.brainName,
+      effort: (this.opts.brains[c.brainName] as { defaultEffort?: string | null } | undefined)?.defaultEffort ?? null,
+      mode: c.mode,
+      fastPath: 'off',
+      marks: {},
+      live: {},
+      analyses: 0,
+      errors: [],
+      status: 'open',
+      durations: {},
+    };
+    c.turns.push(t);
+    if (c.turns.length > 200) c.turns.splice(0, c.turns.length - 200);
+    return t;
+  }
+
+  /** 時刻を記録（既定は最初の1回だけ。overwrite=trueなら最後の値で上書き）。speech_endだけはターンを開く */
+  turnMark(c: Conversation, name: MarkName, overwrite = false): TurnTrace | undefined {
+    if (name === 'speech_end') {
+      // 応答を送ったが音声が始まる前に顧客が話し始めた（割り込み）→ 前のターンは割り込みとして閉じる
+      const cur = this.currentTurn(c);
+      if (cur && cur.marks.speech_sent !== undefined && cur.marks.answer_audio === undefined && c.mode === 'live') this.closeTurn(c, 'interrupted');
+    }
+    const t = name === 'speech_end' ? this.openTurn(c) : this.currentTurn(c);
+    if (!t) return undefined;
+    if (overwrite || t.marks[name] === undefined) t.marks[name] = Date.now();
+    return t;
+  }
+
+  closeTurn(c: Conversation, status: TurnTrace['status']) {
+    const t = this.currentTurn(c);
+    if (!t) return;
+    t.status = status;
+    t.durations = computeDurations(t);
+    if (status === 'answered') c.log('turn_latency', { turnId: t.turnId, profile: t.profile, brain: t.brain, effort: t.effort, fastPath: t.fastPath, fallbackReason: t.fallbackReason, durations: t.durations, errors: t.errors });
+  }
+
+  /**
+   * ブラウザが測った「顧客の声が止んでからAIの音声が聞こえ始めるまで」を、そのターンに付ける。
+   * 応答中のターンがあればそのターン、なければ直前（3秒以内）に答えたターン（応答の音声はサーバの検知とほぼ同時に届くため）。
+   */
+  addClientOnset(c: Conversation, latencyMs: number): boolean {
+    const now = Date.now();
+    const t = this.currentTurn(c) ?? [...c.turns].reverse().find((x) => x.status === 'answered' && x.marks.answer_audio !== undefined && now - x.marks.answer_audio < 3000);
+    if (!t) return false;
+    (t.clientOnsetsMs ??= []).push(Math.round(latencyMs));
+    if (t.status !== 'open') t.durations = computeDurations(t);
+    this.changed(c);
+    return true;
   }
 
   contextSummary(c: Conversation): string {

@@ -15,7 +15,8 @@
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "eval": "tsx server/src/eval/cli.ts"
+    "eval": "tsx server/src/eval/cli.ts",
+    "bench": "tsx server/src/eval/benchCli.ts"
   },
   "dependencies": {
     "express": "^4.22.3",
