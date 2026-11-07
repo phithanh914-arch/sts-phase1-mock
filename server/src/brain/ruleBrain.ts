@@ -5,6 +5,7 @@
 import { emptyFacts, type FactProposal } from '../domain/facts.js';
 import { decideRoute } from '../domain/routing.js';
 import { missingForRegistration } from '../domain/facts.js';
+import { QUESTION_TEXT } from '../domain/questions.js';
 import type { Fact } from '../domain/types.js';
 import type { BrainContext, ConfirmationResponse, ReceptionBrain, ReceptionPlan, RiskSignal } from './types.js';
 
@@ -31,30 +32,7 @@ export function classifyShortAnswer(raw: string): 'yes' | 'no' | null {
   return null;
 }
 
-export const QUESTION_TEXT: Record<string, string> = {
-  towing_requested: 'まず、レッカーの手配は必要でしょうか。',
-  injuries_present: '事故でおけがをされた方や、痛みのある方はいらっしゃいますか。',
-  all_occupants_injury_checked: '一緒に乗っていた方も含めて、おけがや痛みのある方はいらっしゃいますか。',
-  other_person_or_vehicle_involved: 'ほかの人や車は関係していますか。',
-  parked_vehicle_unoccupied: 'ぶつかった車に、人は乗っていましたか。',
-  third_party_property_involved: '何にぶつかったか、またそれがどなたの持ち物か教えていただけますか。',
-  property_ownership: 'ぶつかった物は、お客さまご自身の物、道路の設備などの公共物、ほかの方の持ち物のどれにあたりますか。',
-  incident_kind: 'どのような事故だったか、状況を教えていただけますか。',
-  accident_date: '事故があったのはいつでしょうか。',
-  accident_time: '何時ごろでしたか。',
-  municipality: '事故の場所は、何県何市あたりでしょうか。',
-  accident_description: '事故の状況を教えていただけますか。',
-  driver: '運転されていたのはどなたですか。',
-  damage: 'お車のどこが、どのように傷つきましたか。',
-  counterparty_name: '後日、相手の方へのご連絡に必要なため伺います。ぶつかった車の持ち主のお名前は分かりますか。',
-  counterparty_address: '相手の方のご住所は分かりますか。',
-  counterparty_phone: '相手の方のお電話番号は分かりますか。',
-  police_reported: '警察には届け出ましたか。',
-  caller_name_kana: 'お名前を教えていただけますか。',
-  callback_phone: '折り返しのお電話番号を教えてください。',
-  sms_allowed: '今後のご案内をSMSでお送りしてもよろしいですか。',
-  policy_match: 'ご契約の確認のため、証券番号か、お車の登録番号を教えていただけますか。',
-};
+export { QUESTION_TEXT };
 
 const ASK_ORDER_ELIG = ['towing_requested', 'injuries_present', 'all_occupants_injury_checked', 'other_person_or_vehicle_involved', 'parked_vehicle_unoccupied', 'third_party_property_involved', 'property_ownership', 'incident_kind'];
 const ASK_ORDER_REG = ['accident_date', 'accident_time', 'municipality', 'accident_description', 'damage', 'driver', 'counterparty_name', 'counterparty_address', 'counterparty_phone', 'police_reported', 'caller_name_kana', 'callback_phone', 'policy_match', 'sms_allowed'];
@@ -309,6 +287,7 @@ export class RuleBrain implements ReceptionBrain {
     if (risks.some((r) => r.kind === 'prompt_injection')) speech += 'そのご依頼にはお応えできません。受付を続けさせてください。';
     if (needs.some((n) => n.startsWith('契約情報の開示'))) speech += 'ご契約の詳しい情報は、この受付ではお伝えできません。';
 
+    const speechPrefix = speech;
     if (route.route === 'UNRESOLVED') {
       // 一部だけ申告されたけがの確認は安全上優先する
       const k = route.unresolved.includes('all_occupants_injury_checked') ? 'all_occupants_injury_checked' : ASK_ORDER_ELIG.find((x) => route.unresolved.includes(x)) ?? route.unresolved[0];
@@ -338,6 +317,7 @@ export class RuleBrain implements ReceptionBrain {
       nextIntent,
       desiredInformation: desired,
       suggestedSpeech: speech,
+      speechPrefix,
       evidenceRefs: ctx.newUtteranceIds,
       briefReason: route.reasons.join(' / '),
       brain: this.name,

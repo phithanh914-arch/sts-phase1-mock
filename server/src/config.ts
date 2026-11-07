@@ -28,6 +28,12 @@ export const config = {
   liveFillerAfterMs: num(process.env.LIVE_FILLER_AFTER_MS, 2500),
   liveDelegationWaitMs: num(process.env.LIVE_DELEGATION_WAIT_MS, 1200),
   evalMaxLlmRuns: num(process.env.EVAL_MAX_LLM_RUNS, 40),
+  // 遅延改善のプロファイル既定値（D16）：baseline（A：改善前）/ lightweight（B）/ hybrid（C：B＋Fast Path）。画面で通話ごとに選べる
+  latencyProfile: (['baseline', 'lightweight', 'hybrid'].includes(process.env.LATENCY_PROFILE ?? '') ? process.env.LATENCY_PROFILE : 'hybrid') as 'baseline' | 'lightweight' | 'hybrid',
+  // Fast Pathで確定した発話を裏でLLMにも分析させ、一致を記録する（状態には適用しない）。1を指定したときだけ。API費用が発生
+  fastPathShadow: process.env.FASTPATH_SHADOW === '1',
+  // 画面から実行する1ターン比較ベンチのLLM呼び出し上限
+  benchMaxLlmCalls: num(process.env.BENCH_MAX_LLM_CALLS, 120),
   callWaitLimitMs: num(process.env.CALL_WAIT_LIMIT_MS, 20000),
   dataDir: process.env.DATA_DIR ?? 'data',
   dataRetentionHours: num(process.env.DATA_RETENTION_HOURS, 72),
@@ -45,5 +51,7 @@ export function configSummary() {
     liveVoice: config.liveVoice,
     brainModels: config.brainModels.length ? config.brainModels : '(未設定: Deterministicのみ)',
     brainReasoningEffort: config.brainReasoningEffort || '(指定なし)',
+    latencyProfile: config.latencyProfile,
+    fastPathShadow: config.fastPathShadow,
   };
 }

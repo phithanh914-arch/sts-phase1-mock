@@ -34,6 +34,24 @@ export interface ReceptionPlan {
   evidenceRefs: string[];
   briefReason: string;
   brain: string;
+  /** 質問の前に添える一言（補償の確約不可の案内など。質問を含めない）。コードで質問を選ぶプロファイルで使う */
+  speechPrefix?: string;
+  /** 曖昧な回答の聞き直しが必要なときだけ、LLMが作る確認の質問（コードで質問を選ぶプロファイルで使う） */
+  clarifyQuestion?: string;
+  /** API利用量（LLMのみ） */
+  usage?: BrainUsage;
+}
+
+export interface BrainUsage {
+  model: string;
+  effort: string | null;
+  promptMode: 'full' | 'lean';
+  inputTokens: number;
+  cachedTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  /** 公式単価から算出（USD）。単価が不明なモデルはnull */
+  costUsd: number | null;
 }
 
 export interface BrainContext {
@@ -54,6 +72,12 @@ export interface BrainContext {
   receptionState: string;
   registrationState: string;
   today: string; // YYYY-MM-DD (JST)
+  /** full：従来（質問文もLLMが作る）。lean：事実抽出に専念（質問はコードが選ぶ）。D16 */
+  promptMode?: 'full' | 'lean';
+  /** 推論量の上書き（比較計測用）。未指定ならBrainの既定 */
+  reasoningEffort?: string | null;
+  /** 直前にAIが話した質問のID（コード選択の質問のみ） */
+  lastQuestionKey?: string | null;
 }
 
 export interface ReceptionBrain {

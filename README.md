@@ -65,6 +65,7 @@ NODE_ENV=production APP_PASSWORD=... npm start   # http://127.0.0.1:8787
    - `APP_PASSWORD`：画面ログイン用（推測されにくいもの）
    - `OPENAI_API_KEY`：OpenAIのAPIキー（音声を使う場合）
    - `BRAIN_MODEL`：LLM Brainを使う場合のみ（空ならDeterministic）。カンマ区切りで複数指定すると画面の「受付Brain」で切り替え可能（先頭が既定）
+   - `LATENCY_PROFILE`（任意）：応答速度の構成。`hybrid`（既定：質問はコード選択＋Fast Path）／`lightweight`／`baseline`（改善前）。画面でも通話ごとに選べる。詳細は [docs/latency-improvement.md](docs/latency-improvement.md)
 4. **Apply** → ビルド完了後に表示される `https://sts-phase1-mock-xxxx.onrender.com` を別PCのブラウザで開く
 5. パスワードでログイン → 「音声で開始」→ マイクを許可
 
@@ -88,6 +89,8 @@ npm test            # vitest（acceptance T01〜T39 + 短答・話し方の確�
 npm run build       # vite build + tsc
 npm run eval -- --reps 3                     # 受入ケースのMarkdown合否表（Deterministic）
 npm run eval -- --brain llm --reps 1         # LLM Brain（要 OPENAI_API_KEY, BRAIN_MODEL。費用あり）
+npm run eval -- --profile hybrid              # 構成（baseline/lightweight/hybrid）を指定
+npm run bench                                 # 1ターン比較ベンチ（A/B/C、33ケース）。--brain llm で費用あり
 ```
 
 ### 人が確認すべきこと（自動判定の対象外）

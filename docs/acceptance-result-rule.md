@@ -1,4 +1,4 @@
-# 受入テスト結果（brain=deterministic-rule-brain, 繰返し=3, 実行日時=2026-11-06T15:17:38.711Z）
+# 受入テスト結果（brain=deterministic-rule-brain, profile=hybrid, 繰返し=3, 実行日時=2026-11-06T16:23:16.183Z）
 
 |ID|ケース|期待|合格/回数|失敗したチェック（根拠）|
 |---|---|---|---|---|
