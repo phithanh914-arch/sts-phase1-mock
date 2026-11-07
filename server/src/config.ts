@@ -27,6 +27,7 @@ export const config = {
   liveTurnGapMs: num(process.env.LIVE_TURN_GAP_MS, 900),
   liveFillerAfterMs: num(process.env.LIVE_FILLER_AFTER_MS, 2500),
   liveDelegationWaitMs: num(process.env.LIVE_DELEGATION_WAIT_MS, 1200),
+  liveProactiveAfterMs: num(process.env.LIVE_PROACTIVE_AFTER_MS, 1500),
   evalMaxLlmRuns: num(process.env.EVAL_MAX_LLM_RUNS, 40),
   // 遅延改善のプロファイル既定値（D16）：baseline（A：改善前）/ lightweight（B）/ hybrid（C：B＋Fast Path）。画面で通話ごとに選べる
   latencyProfile: (['baseline', 'lightweight', 'hybrid'].includes(process.env.LATENCY_PROFILE ?? '') ? process.env.LATENCY_PROFILE : 'hybrid') as 'baseline' | 'lightweight' | 'hybrid',
