@@ -7,9 +7,9 @@ import { RuleBrain } from '../brain/ruleBrain.js';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function setup(profile: string, fillerAfterMs = 0) {
+function setup(profile: string, fillerAfterMs = 0, proactiveAfterMs = 0) {
   const ctl = new SessionController({ brains: { rule: new RuleBrain() }, defaultBrain: 'rule', today: () => '2026-11-06' });
-  const live = new LiveAdapter({ apiKey: 'test-not-used', model: 'gpt-live-1', voice: 'harema', voices: ['harema'], maxSessionSeconds: 60, maxConcurrent: 1, maxSessionsPerDay: 1, turnGapMs: 40, delegationWaitMs: 1200, fillerAfterMs }, ctl);
+  const live = new LiveAdapter({ apiKey: 'test-not-used', model: 'gpt-live-1', voice: 'harema', voices: ['harema'], maxSessionSeconds: 60, maxConcurrent: 1, maxSessionsPerDay: 1, turnGapMs: 40, delegationWaitMs: 1200, fillerAfterMs, proactiveAfterMs }, ctl);
   const s = live.testSession('rule', profile);
   const appended = () => s.sent.filter((e) => e.type === 'session.instructions.append');
   // 名乗り（レッカーの質問）を話し終えたことにする
@@ -119,5 +119,83 @@ describe('Live：つなぎ言葉（D15）との両立', () => {
     expect(after[0]).toMatchObject({ delegation_id: 'dlg_1' });
     const turn = s.conv.turns.at(-1)!;
     expect(turn.marks.filler_sent).toBeDefined();
+  });
+});
+
+describe('Live：委任が来ない場合（D20、CONV-cb163cbdの固まり）', () => {
+  it('Hybrid：Fast Pathで結果が出ても、委任前にthinking（質問の予告・会話メモ）を送らない', async () => {
+    const s = setup('hybrid', 0, 0);
+    const before = s.sent.length;
+    await customerSays(s, 'いいえ', 6000);
+    expect(s.conv.analyses.at(-1)?.brain).toBe('fast-path');
+    expect(s.sent.slice(before).filter((e) => e.type === 'session.thinking.append')).toHaveLength(0);
+    // 委任が来たら質問を返し、その後に保留していた会話メモを送る
+    s.emit({ type: 'session.delegation.created', delegation: { id: 'dlg_1', target: 'client' }, offset_ms: 6600 });
+    const after = s.sent.slice(before);
+    expect(after.map((e) => e.type)).toEqual(['session.instructions.append', 'session.thinking.append']);
+    expect(after[0]).toMatchObject({ delegation_id: 'dlg_1' });
+  });
+
+  it('Hybrid：委任が来ないまま見張り時間が過ぎたら、自分から次の質問を1回だけ話す', async () => {
+    const s = setup('hybrid', 0, 100);
+    const before = s.appended().length;
+    await customerSays(s, 'いいえ', 6000);
+    expect(s.appended().length).toBe(before);
+    await wait(150);
+    const sent = s.appended().slice(before);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ delegation_id: null });
+    expect(String(sent[0].content)).toContain('急いで対応が必要な状況');
+    const turn = s.conv.turns.at(-1)!;
+    expect(turn.marks.speech_sent).toBeDefined();
+    s.emit({ type: 'session.output_transcript.delta', delta: '今、急いで', start_ms: 8500, end_ms: 9000, client_event_id: sent[0].event_id as string });
+    expect(turn.status).toBe('answered');
+    expect(turn.durations.total_ms).toBe(2500);
+    await wait(150);
+    expect(s.appended().slice(before)).toHaveLength(1);
+  });
+
+  it('自分から質問した後に遅れて委任が届いても、同じ質問を繰り返さない', async () => {
+    const s = setup('hybrid', 0, 100);
+    const before = s.appended().length;
+    await customerSays(s, 'いいえ', 6000);
+    await wait(150);
+    s.emit({ type: 'session.delegation.created', delegation: { id: 'dlg_late', target: 'client' }, offset_ms: 8000 });
+    await wait(1300);
+    expect(s.appended().slice(before)).toHaveLength(1);
+    const noop = s.sent.filter((e) => e.type === 'session.thinking.append' && e.delegation_id === 'dlg_late');
+    expect(noop).toHaveLength(1);
+  });
+
+  it('遅れた委任の前に顧客が話した場合は、その発話を分析して答える', async () => {
+    const s = setup('hybrid', 0, 100);
+    await customerSays(s, 'いいえ', 6000);
+    await wait(150);
+    const before = s.appended().length;
+    await customerSays(s, 'いいえ、ありません', 11000);
+    s.emit({ type: 'session.delegation.created', delegation: { id: 'dlg_2', target: 'client' }, offset_ms: 11600 });
+    await wait(50);
+    const sent = s.appended().slice(before);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ delegation_id: 'dlg_2' });
+  });
+
+  it('顧客が話している間は、見張り時間が過ぎても話し始めない', async () => {
+    const s = setup('hybrid', 0, 100);
+    const before = s.appended().length;
+    await customerSays(s, 'いいえ', 6000);
+    s.emit({ type: 'session.input_transcript.delta', delta: 'あの', start_ms: 6500, end_ms: 6700 });
+    await wait(120);
+    expect(s.appended().slice(before)).toHaveLength(0);
+  });
+
+  it('Baseline：従来どおり、委任前の結果はthinkingで渡し、自分からは話さない', async () => {
+    const s = setup('baseline', 0, 100);
+    const before = s.sent.length;
+    await customerSays(s, 'いいえ', 6000);
+    await wait(150);
+    const after = s.sent.slice(before);
+    expect(after.filter((e) => e.type === 'session.instructions.append')).toHaveLength(0);
+    expect(after.some((e) => e.type === 'session.thinking.append')).toBe(true);
   });
 });
