@@ -37,6 +37,78 @@ export const QUESTION_TEXT: Record<string, string> = {
 export const SAFETY_QUESTION = { key: 'safety_check', text: '今、急いで対応が必要な状況はありますか。' };
 export const NARRATIVE_QUESTION = { key: 'accident_narrative', text: 'どのような事故だったか、お聞かせいただけますか。' };
 
+/** D26：氏名が漢字で文字起こしされ、読みが推測になっているときに1回だけ聞く */
+export const NAME_READING_QUESTION = { key: 'caller_name_reading', text: 'お名前の読み方を、一文字ずつ区切って教えていただけますか。' };
+
+/** 漢字（CJK統合漢字）を含むか */
+const HAS_KANJI = /[\u3400-\u9FFF\uF900-\uFAFF]/;
+const capturedFact = (f?: Fact) => !!f && (f.status === 'captured' || f.status === 'confirmed');
+
+/**
+ * D26：氏名の読みが「聞こえた読み」ではなく、漢字から推測したものか。
+ * GPT-Liveの文字起こしは氏名を漢字にすることがあり（キタガワタカトシ → 北川隆司）、そこから読みを推測すると誤る（キタガワリュウジ）。
+ */
+export function nameReadingIsGuess(f?: Fact): boolean {
+  if (!capturedFact(f) || f!.status === 'confirmed') return false;
+  const orig = f!.originalExpression ?? '';
+  if (!HAS_KANJI.test(orig)) return false;
+  // 発話そのものに読み（カナ）が含まれていれば、聞こえた読みなので推測ではない
+  const squash = (s: string) => s.normalize('NFKC').replace(/[\s\u3000・、。,]/g, '');
+  const kana = squash(String(f!.value ?? ''));
+  return !kana || !squash(orig).includes(kana);
+}
+
+// D26：英字の読み（シー → C 等）。長い読みから置き換える
+const LETTER_READINGS: [string, string][] = ([
+  ['ダブリュー', 'W'], ['エックス', 'X'], ['エイチ', 'H'], ['エッチ', 'H'], ['ジェー', 'J'], ['ジェイ', 'J'], ['キュー', 'Q'], ['アール', 'R'],
+  ['ディー', 'D'], ['ティー', 'T'], ['ゼット', 'Z'], ['エー', 'A'], ['エイ', 'A'], ['ビー', 'B'], ['シー', 'C'], ['イー', 'E'], ['エフ', 'F'],
+  ['ジー', 'G'], ['アイ', 'I'], ['ケー', 'K'], ['ケイ', 'K'], ['エル', 'L'], ['エム', 'M'], ['エヌ', 'N'], ['オー', 'O'], ['ピー', 'P'],
+  ['エス', 'S'], ['ユー', 'U'], ['ブイ', 'V'], ['ワイ', 'Y'],
+] as [string, string][]).sort((a, b) => b[0].length - a[0].length);
+
+/**
+ * D26：証券番号の表記をそろえる。「Cの123456789」「シーの123-456-789」「Ｃ１２３…」→ C123456789。
+ * 英字と数字以外が残る場合（読み取れない文字）は、元の値をそのまま返す。
+ */
+export function normalizePolicyNumber(raw: string): string {
+  let v = raw.normalize('NFKC').replace(/です|でした|番号/g, '');
+  v = v.replace(/[\u3041-\u3096]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + 0x60)); // ひらがな → カタカナ
+  for (const [r, l] of LETTER_READINGS) v = v.split(r).join(l);
+  v = v.replace(/[\sー\-‐－・、。,.]|ノ|番/g, '').toUpperCase();
+  return /^[A-Z0-9]+$/.test(v) ? v : raw;
+}
+
+/** 証券番号・登録番号を読み上げやすい形に（例：C123456789 → C・123・456・789） */
+export function spokenId(v: string): string {
+  const m = /^([A-Z]*)(\d+)$/.exec(v);
+  if (!m) return v;
+  const digits = m[2].replace(/(\d{3})(?=\d)/g, '$1・');
+  return m[1] ? `${m[1]}・${digits}` : digits;
+}
+
+/**
+ * D26：契約確認の質問。同じ質問を繰り返さない。
+ * - 1回目：証券番号か登録番号を聞く
+ * - 番号を聞いたのに契約が見つからない：聞き取った番号を読み上げ、もう一方の番号を1回だけ聞く（顧客が言い間違い・聞き間違いに気づける）
+ * - それでも見つからない／何も聞き取れないまま2回聞いた：これ以上聞かない（有人で確認する）
+ */
+export function policyQuestion(facts: Record<string, Fact>, asked: Record<string, number>): NextQuestion | null {
+  const n = (k: string) => asked[k] ?? 0;
+  if (n('policy_match') === 0) return q('policy_match');
+  if (n('policy_alt') > 0 || n('policy_match') >= 2) return null;
+  const num = capturedFact(facts.policy_number) ? String(facts.policy_number.value) : null;
+  const plate = capturedFact(facts.vehicle_plate) ? String(facts.vehicle_plate.value) : null;
+  if (num && !plate) return { key: 'policy_alt', text: `証券番号は「${spokenId(num)}」で承りました。念のため、お車の登録番号も教えていただけますか。` };
+  if (plate && !num) return { key: 'policy_alt', text: `登録番号は「${plate}」で承りました。念のため、証券番号も教えていただけますか。` };
+  if (num && plate) return null;
+  return { key: 'policy_match', text: '証券番号か、お車の登録番号を、もう一度教えていただけますか。分からなければ、分からないとおっしゃってください。' };
+}
+
+/** D26：契約確認をこれ以上聞かない状態か（有人引継ぎの判断に使う） */
+export function policyQuestionsExhausted(facts: Record<string, Fact>, asked: Record<string, number>): boolean {
+  return (asked.policy_match ?? 0) > 0 && policyQuestion(facts, asked) === null;
+}
+
 /** 冒頭の名乗りの質問はレッカー要否 */
 export const GREETING_QUESTION_KEY = 'towing_requested';
 
@@ -66,9 +138,17 @@ export function selectNextQuestion(s: { facts: Record<string, Fact>; route: Rout
     return k && QUESTION_TEXT[k] ? q(k) : { key: 'free', text: '状況を教えていただけますか。' };
   }
   if (s.route.route === 'SELF_SERVICE') {
+    // D26：氏名の読みが漢字からの推測なら、次の質問の前に読み方を1回だけ聞く
+    if (nameReadingIsGuess(s.facts.caller_name_kana) && !asked(NAME_READING_QUESTION.key)) return NAME_READING_QUESTION;
     const miss = missingForRegistration(s.facts, s.policyMatched);
-    const k = REG_ORDER.find((x) => miss.includes(x));
-    return k ? q(k) : null;
+    for (const k of REG_ORDER) {
+      if (!miss.includes(k)) continue;
+      if (k !== 'policy_match') return q(k);
+      // D26：契約確認は同じ質問を繰り返さない。聞き尽くしたら次の項目へ（最後に有人で確認）
+      const pq = policyQuestion(s.facts, s.asked);
+      if (pq) return pq;
+    }
+    return null;
   }
   return null;
 }
