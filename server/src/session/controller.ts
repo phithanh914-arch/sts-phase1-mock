@@ -17,7 +17,7 @@ import { ActionGate } from '../gate/actionGate.js';
 import type { BrainContext, ReceptionBrain, ReceptionPlan } from '../brain/types.js';
 import type { FactProposal } from '../domain/facts.js';
 import { Conversation, type AnalysisRecord } from './conversation.js';
-import { GREETING_QUESTION_KEY, NARRATIVE_QUESTION, QUESTION_TEXT, SAFETY_QUESTION, normalizePolicyNumber, policyQuestionsExhausted, selectNextQuestion } from '../domain/questions.js';
+import { GREETING_QUESTION_KEY, NAME_ECHO_KEY, NAME_ECHO_MARK, NARRATIVE_QUESTION, QUESTION_TEXT, SAFETY_QUESTION, nameFromEcho, nameReadingIsGuess, normalizePolicyNumber, policyQuestionsExhausted, selectNextQuestion } from '../domain/questions.js';
 import { questionWasSpoken, tryFastPath } from '../brain/fastPath.js';
 import { computeDurations, resolveProfile, type MarkName, type ProfileName, type TurnTrace } from './latency.js';
 
@@ -151,8 +151,35 @@ export class SessionController {
   }
 
   /** AIが実際に話した（Live出力transcriptやテキスト表示） */
-  aiSpoke(c: Conversation, text: string, source: 'text' | 'live', tag?: string, startMs?: number, endMs?: number) {
-    this.addUtterance(c, { speaker: 'ai', text, kind: 'spoken', source, tag, startMs, endMs });
+  aiSpoke(c: Conversation, text: string, source: 'text' | 'live', tag?: string, startMs?: number, endMs?: number): Utterance {
+    return this.addUtterance(c, { speaker: 'ai', text, kind: 'spoken', source, tag, startMs, endMs });
+  }
+
+  /**
+   * D27：氏名の読みが漢字からの推測なら、この質問の前に GPT-Live に「〇〇様ですね」と聞こえた読みで復唱させる（1回だけ）。
+   * Live が実際に質問を送るときに呼ぶ（送らない結果では数えない）。
+   */
+  takeNameEcho(c: Conversation): boolean {
+    if (c.askedCounts[NAME_ECHO_KEY] || !nameReadingIsGuess(c.facts.caller_name_kana)) return false;
+    c.askedCounts[NAME_ECHO_KEY] = 1;
+    c.log('name_echo_requested', { guess: c.facts.caller_name_kana.value, original: c.facts.caller_name_kana.originalExpression });
+    return true;
+  }
+
+  /**
+   * D27：GPT-Live が氏名を復唱した発話から、聞こえた読み（カタカナ）を氏名の読みとして記録する。
+   * 復唱が漢字などで読みが取れなければ、推測の読みのまま（最後の読上げで顧客が訂正できる）。
+   */
+  nameEchoSpoken(c: Conversation, spoken: string, utteranceId?: string) {
+    const kana = nameFromEcho(spoken);
+    const f = c.facts.caller_name_kana;
+    if (!kana) { c.log('name_echo_unusable', { spoken }); return; }
+    if (!nameReadingIsGuess(f)) { c.log('name_echo_skipped', { spoken, reason: 'not_guess' }); return; }
+    const prev = f.value;
+    const version = c.version + 1;
+    if (applyProposal(c.facts, { key: 'caller_name_kana', value: kana, status: 'captured', originalExpression: `${f.originalExpression ?? ''}${NAME_ECHO_MARK}${kana}）`, evidenceRefs: [...f.evidenceRefs, ...(utteranceId ? [utteranceId] : [])], isCorrection: prev !== kana }, version, 'customer', 'live_name_echo')) c.version = version;
+    c.log('name_reading_from_echo', { from: prev, to: kana, spoken });
+    this.changed(c);
   }
 
   markReadbackDelivered(c: Conversation, confirmationId: string) {
@@ -322,6 +349,8 @@ export class SessionController {
     for (const p of plan.factProposals) {
       // D26：証券番号の表記をそろえる（「Cの123456789」→ C123456789）
       if (p.key === 'policy_number' && p.status === 'captured' && typeof p.value === 'string') p.value = normalizePolicyNumber(p.value);
+      // D27：GPT-Live が聞こえた読みで復唱した氏名は、顧客の訂正以外では上書きしない（Brainが漢字から推測し直すのを防ぐ）
+      if (p.key === 'caller_name_kana' && !p.isCorrection && c.facts.caller_name_kana.originalExpression?.includes(NAME_ECHO_MARK)) { c.log('name_echo_kept', { proposed: p.value }); continue; }
       const issue = validateProposal(p, known);
       if (issue) { rejected.push(issue); continue; }
       if (applyProposal(c.facts, p, newVersion)) changedKeys.push(p.key);
