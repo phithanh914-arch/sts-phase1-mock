@@ -280,3 +280,50 @@ describe('Live：送信予定（AI(予定)）の記録（D24）', () => {
     expect(new Set(all.map((u) => u.text)).size).toBe(all.length);
   });
 });
+
+describe('Live：古い質問・同じ質問の繰り返しを防ぐ（D25）', () => {
+  it('分析中に顧客が続きを話したら、古い分析で決めた質問は話さず、再分析の結果で1回だけ答える', async () => {
+    const slow = new RuleBrain();
+    const inner = slow.analyze.bind(slow);
+    slow.analyze = async (ctx) => { await wait(200); return inner(ctx); };
+    const ctl = new SessionController({ brains: { rule: slow }, defaultBrain: 'rule', today: () => '2026-11-06' });
+    const live = new LiveAdapter({ apiKey: 'test-not-used', model: 'gpt-live-1', voice: 'harema', voices: ['harema'], maxSessionSeconds: 60, maxConcurrent: 1, maxSessionsPerDay: 1, turnGapMs: 40, delegationWaitMs: 1200, fillerAfterMs: 0 }, ctl);
+    const s = live.testSession('rule', 'baseline');
+    const appended = () => s.sent.filter((e) => e.type === 'session.instructions.append');
+    s.emit({ type: 'session.started' });
+    s.emit({ type: 'session.output_transcript.delta', delta: '事故受付のAIです。まず、レッカーの手配は必要でしょうか。', start_ms: 1000, end_ms: 4000, client_event_id: appended()[0].event_id as string });
+    s.emit({ type: 'session.input_transcript.delta', delta: 'いいえ', start_ms: 5000, end_ms: 5400 });
+    await wait(60); // 1つ目の発話だけで分析開始（200msかかる）
+    expect(s.conv.analysisInFlight).toBe(true);
+    s.emit({ type: 'session.input_transcript.delta', delta: 'けがをした人はいません', start_ms: 5800, end_ms: 6600 });
+    await wait(60); // 続きが届く → 再分析待ち
+    s.emit({ type: 'session.delegation.created', delegation: { id: 'dlg_1', target: 'client' }, offset_ms: 6800 });
+    await wait(600);
+    const sent = appended().slice(1);
+    expect(s.conv.audit.some((a) => a.event === 'stale_question_suppressed')).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ delegation_id: 'dlg_1' });
+    expect(String(sent[0].content)).not.toContain('けが');
+  });
+
+  it('自分から話した質問を、受付データが変わらないまま自分から繰り返さない', async () => {
+    const s = setup('hybrid', 0, 50);
+    await customerSays(s, 'いいえ、不要です', 6000);
+    await wait(100); // 委任が来ない → 見張りタイマーで自分から質問
+    const first = s.appended().slice(1);
+    expect(first).toHaveLength(1);
+    s.emit({ type: 'session.output_transcript.delta', delta: '今、急いで対応が必要な状況はありますか。', start_ms: 7000, end_ms: 9000, client_event_id: first[0].event_id as string });
+    await wait(60);
+    // 顧客の発話が何も変えず、同じ質問に戻った（実機ではGPT-Liveが言い直していた）→ 委任のないまま結果が再び出る
+    const ctlPriv = s.ctl as unknown as { speak: (c: unknown, d: unknown, id: string | null, solicited: boolean) => void };
+    ctlPriv.speak(s.conv, { kind: 'question', text: '今、急いで対応が必要な状況はありますか。', exact: false, questionKey: s.conv.lastQuestionKey }, null, false);
+    await wait(150);
+    expect(s.appended().slice(1)).toHaveLength(1);
+    expect(s.conv.audit.some((a) => a.event === 'proactive_repeat_skipped')).toBe(true);
+    // 顧客が話して委任が来れば、そこで答える
+    s.emit({ type: 'session.input_transcript.delta', delta: 'はい？', start_ms: 9500, end_ms: 9800 });
+    s.emit({ type: 'session.delegation.created', delegation: { id: 'dlg_2', target: 'client' }, offset_ms: 10000 });
+    await wait(1400);
+    expect(s.appended().at(-1)).toMatchObject({ delegation_id: 'dlg_2' });
+  });
+});
