@@ -7,9 +7,9 @@ import { RuleBrain } from '../brain/ruleBrain.js';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function setup(profile: string, fillerAfterMs = 0, proactiveAfterMs = 0) {
+function setup(profile: string, fillerAfterMs = 0, proactiveAfterMs = 0, ackCancel = false) {
   const ctl = new SessionController({ brains: { rule: new RuleBrain() }, defaultBrain: 'rule', today: () => '2026-11-06' });
-  const live = new LiveAdapter({ apiKey: 'test-not-used', model: 'gpt-live-1', voice: 'harema', voices: ['harema'], maxSessionSeconds: 60, maxConcurrent: 1, maxSessionsPerDay: 1, turnGapMs: 40, delegationWaitMs: 1200, fillerAfterMs, proactiveAfterMs }, ctl);
+  const live = new LiveAdapter({ apiKey: 'test-not-used', model: 'gpt-live-1', voice: 'harema', voices: ['harema'], maxSessionSeconds: 60, maxConcurrent: 1, maxSessionsPerDay: 1, turnGapMs: 40, delegationWaitMs: 1200, fillerAfterMs, proactiveAfterMs, ackCancel }, ctl);
   const s = live.testSession('rule', profile);
   const appended = () => s.sent.filter((e) => e.type === 'session.instructions.append');
   // 名乗り（レッカーの質問）を話し終えたことにする
@@ -222,11 +222,40 @@ describe('Live：音声モデルの選択（D21）', () => {
 
 describe('Live：委任時の自動の相づち（D22）', () => {
   it('待ち時間を指定すると acknowledgement_delay_ms に入る', () => {
-    expect(liveDelegation(8000)).toEqual({ type: 'client', acknowledgement_delay_ms: 8000 });
+    expect(liveDelegation(500)).toEqual({ type: 'client', acknowledgement_delay_ms: 500 });
     expect(liveDelegation(0)).toEqual({ type: 'client', acknowledgement_delay_ms: 0 });
+  });
+  it('APIの上限（800ms）を超える値は800に丸める（8000で通話が切れたため、D23）', () => {
+    expect(liveDelegation(8000)).toEqual({ type: 'client', acknowledgement_delay_ms: 800 });
   });
   it('未指定・負の値はAPIの既定に任せる', () => {
     expect(liveDelegation(undefined)).toEqual({ type: 'client' });
     expect(liveDelegation(-1)).toEqual({ type: 'client' });
+  });
+});
+
+describe('Live：自動の相づちの取り消し（D23）', () => {
+  const ackCancels = (s: ReturnType<typeof setup>) => s.sent.filter((e) => e.type === 'session.thinking.append' && String(e.event_id).startsWith('ackcancel_'));
+  it('すぐ答えられない委任では、会話メモ（委任IDなし）を送って相づちを取り消す', async () => {
+    const s = setup('baseline', 0, 0, true);
+    await customerSays(s, 'いいえ、不要です', 6000);
+    s.emit({ type: 'session.delegation.created', delegation: { id: 'dlg_1', target: 'client' }, offset_ms: 6600 });
+    expect(ackCancels(s)).toHaveLength(1);
+    expect(ackCancels(s)[0]).toMatchObject({ delegation_id: null });
+    // 委任は応答時に閉じる
+    await wait(1300);
+    expect(s.appended().at(-1)).toMatchObject({ delegation_id: 'dlg_1' });
+  });
+  it('Fast Pathで即答できる委任では送らない（応答と会話メモで取り消されるため）', async () => {
+    const s = setup('hybrid', 0, 0, true);
+    await customerSays(s, 'いいえ、不要です', 6000);
+    s.emit({ type: 'session.delegation.created', delegation: { id: 'dlg_1', target: 'client' }, offset_ms: 6600 });
+    expect(ackCancels(s)).toHaveLength(0);
+  });
+  it('無効にした場合は送らない', async () => {
+    const s = setup('baseline', 0, 0, false);
+    await customerSays(s, 'いいえ、不要です', 6000);
+    s.emit({ type: 'session.delegation.created', delegation: { id: 'dlg_1', target: 'client' }, offset_ms: 6600 });
+    expect(ackCancels(s)).toHaveLength(0);
   });
 });
