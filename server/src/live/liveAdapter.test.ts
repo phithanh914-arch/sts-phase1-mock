@@ -1,7 +1,7 @@
 // GPT-Liveのsidebandイベントを模擬して、待機の削減・遅延計測・割り込みの扱いを確かめる（ネットワーク接続なし）。
 // 実際の音声・GPT-Liveの挙動そのものは実機でしか確認できない。
 import { describe, it, expect } from 'vitest';
-import { LiveAdapter, resolveLiveModel } from './liveAdapter.js';
+import { LiveAdapter, resolveLiveModel, liveDelegation } from './liveAdapter.js';
 import { SessionController } from '../session/controller.js';
 import { RuleBrain } from '../brain/ruleBrain.js';
 
@@ -217,5 +217,16 @@ describe('Live：音声モデルの選択（D21）', () => {
     const s = live.testSession('rule', 'hybrid');
     s.conv.live.model = 'gpt-live-1.1';
     expect(ctl.openTurn(s.conv).liveModel).toBe('gpt-live-1.1');
+  });
+});
+
+describe('Live：委任時の自動の相づち（D22）', () => {
+  it('待ち時間を指定すると acknowledgement_delay_ms に入る', () => {
+    expect(liveDelegation(8000)).toEqual({ type: 'client', acknowledgement_delay_ms: 8000 });
+    expect(liveDelegation(0)).toEqual({ type: 'client', acknowledgement_delay_ms: 0 });
+  });
+  it('未指定・負の値はAPIの既定に任せる', () => {
+    expect(liveDelegation(undefined)).toEqual({ type: 'client' });
+    expect(liveDelegation(-1)).toEqual({ type: 'client' });
   });
 });

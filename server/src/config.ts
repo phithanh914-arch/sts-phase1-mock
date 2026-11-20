@@ -30,6 +30,10 @@ export const config = {
   liveFillerAfterMs: num(process.env.LIVE_FILLER_AFTER_MS, 2500),
   liveDelegationWaitMs: num(process.env.LIVE_DELEGATION_WAIT_MS, 1200),
   liveProactiveAfterMs: num(process.env.LIVE_PROACTIVE_AFTER_MS, 1500),
+  // D22：GPT-Liveが委任のたびに自動で言う相づち（「はい」）までの待ち時間。APIの既定は0（すぐ言う）で、
+  // gpt-live-1.1では「はい」＋質問がつながって「はいどのような…」「は、はい」になる。応答や会話メモ（thinking）を送ると取り消されるので、
+  // 応答が間に合う長さにして実質的に言わせない。待ちが長いときは自前のつなぎ言葉（LIVE_FILLER_AFTER_MS）が出る。0で従来どおり
+  liveAckDelayMs: num(process.env.LIVE_ACK_DELAY_MS, 8000),
   evalMaxLlmRuns: num(process.env.EVAL_MAX_LLM_RUNS, 40),
   // 遅延改善のプロファイル既定値（D16）：baseline（A：改善前）/ lightweight（B）/ hybrid（C：B＋Fast Path）。画面で通話ごとに選べる
   latencyProfile: (['baseline', 'lightweight', 'hybrid'].includes(process.env.LATENCY_PROFILE ?? '') ? process.env.LATENCY_PROFILE : 'hybrid') as 'baseline' | 'lightweight' | 'hybrid',
@@ -53,6 +57,7 @@ export function configSummary() {
     liveModel: config.liveModel,
     liveModels: config.liveModels,
     liveVoice: config.liveVoice,
+    liveAckDelayMs: config.liveAckDelayMs,
     brainModels: config.brainModels.length ? config.brainModels : '(未設定: Deterministicのみ)',
     brainReasoningEffort: config.brainReasoningEffort || '(指定なし)',
     latencyProfile: config.latencyProfile,
