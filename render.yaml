@@ -25,6 +25,8 @@ services:
         sync: false
       - key: LIVE_MODEL
         value: gpt-live-1
+      - key: LIVE_MODELS
+        value: gpt-live-1,gpt-live-1.1
       - key: LIVE_VOICE
         value: harema
       - key: LIVE_VOICES

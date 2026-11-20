@@ -1,7 +1,7 @@
 // GPT-Liveのsidebandイベントを模擬して、待機の削減・遅延計測・割り込みの扱いを確かめる（ネットワーク接続なし）。
 // 実際の音声・GPT-Liveの挙動そのものは実機でしか確認できない。
 import { describe, it, expect } from 'vitest';
-import { LiveAdapter } from './liveAdapter.js';
+import { LiveAdapter, resolveLiveModel } from './liveAdapter.js';
 import { SessionController } from '../session/controller.js';
 import { RuleBrain } from '../brain/ruleBrain.js';
 
@@ -197,5 +197,25 @@ describe('Live：委任が来ない場合（D20、CONV-cb163cbdの固まり）',
     const after = s.sent.slice(before);
     expect(after.filter((e) => e.type === 'session.instructions.append')).toHaveLength(0);
     expect(after.some((e) => e.type === 'session.thinking.append')).toBe(true);
+  });
+});
+
+describe('Live：音声モデルの選択（D21）', () => {
+  const allowed = ['gpt-live-1', 'gpt-live-1.1'];
+  it('許可リストにあるモデルはそのまま使う', () => {
+    expect(resolveLiveModel('gpt-live-1.1', allowed, 'gpt-live-1')).toBe('gpt-live-1.1');
+  });
+  it('リスト外・未指定・文字列以外は既定に戻す', () => {
+    expect(resolveLiveModel('gpt-live-9', allowed, 'gpt-live-1')).toBe('gpt-live-1');
+    expect(resolveLiveModel(undefined, allowed, 'gpt-live-1')).toBe('gpt-live-1');
+    expect(resolveLiveModel(123, allowed, 'gpt-live-1')).toBe('gpt-live-1');
+    expect(resolveLiveModel('gpt-live-1.1', undefined, 'gpt-live-1')).toBe('gpt-live-1');
+  });
+  it('ライブ会話のターン記録にモデルが残る', () => {
+    const ctl = new SessionController({ brains: { rule: new RuleBrain() }, defaultBrain: 'rule', today: () => '2026-11-06' });
+    const live = new LiveAdapter({ apiKey: 'test-not-used', model: 'gpt-live-1', models: allowed, voice: 'harema', voices: ['harema'], maxSessionSeconds: 60, maxConcurrent: 1, maxSessionsPerDay: 1, turnGapMs: 40, delegationWaitMs: 1200, fillerAfterMs: 0 }, ctl);
+    const s = live.testSession('rule', 'hybrid');
+    s.conv.live.model = 'gpt-live-1.1';
+    expect(ctl.openTurn(s.conv).liveModel).toBe('gpt-live-1.1');
   });
 });

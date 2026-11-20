@@ -30,7 +30,7 @@ const defaultBrain = brains.llm ? 'llm' : 'rule';
 
 const ctl = new SessionController({ brains, defaultBrain, dataDir: config.dataDir, brainTimeoutMs: config.brainTimeoutMs, callWaitLimitMs: config.callWaitLimitMs, defaultProfile: config.latencyProfile, fastPathShadow: config.fastPathShadow });
 const live = config.openaiApiKey
-  ? new LiveAdapter({ apiKey: config.openaiApiKey, model: config.liveModel, voice: config.liveVoice, voices: config.liveVoices, maxSessionSeconds: config.liveMaxSessionSeconds, maxConcurrent: config.liveMaxConcurrent, maxSessionsPerDay: config.liveMaxSessionsPerDay, turnGapMs: config.liveTurnGapMs, delegationWaitMs: config.liveDelegationWaitMs, fillerAfterMs: config.liveFillerAfterMs, proactiveAfterMs: config.liveProactiveAfterMs }, ctl)
+  ? new LiveAdapter({ apiKey: config.openaiApiKey, model: config.liveModel, models: config.liveModels, voice: config.liveVoice, voices: config.liveVoices, maxSessionSeconds: config.liveMaxSessionSeconds, maxConcurrent: config.liveMaxConcurrent, maxSessionsPerDay: config.liveMaxSessionsPerDay, turnGapMs: config.liveTurnGapMs, delegationWaitMs: config.liveDelegationWaitMs, fillerAfterMs: config.liveFillerAfterMs, proactiveAfterMs: config.liveProactiveAfterMs }, ctl)
   : null;
 
 // ログ保存期限（既定72時間）を過ぎた会話ログを削除
@@ -87,6 +87,7 @@ api.get('/config', (_req, res) => {
     brains: Object.fromEntries(Object.entries(brains).map(([k, b]) => [k, b.name])),
     defaultBrain,
     liveModel: config.liveModel,
+    liveModels: config.liveModels,
     liveVoice: config.liveVoice,
     liveVoices: config.liveVoices,
     speechSpeeds: Object.fromEntries(Object.entries(SPEECH_SPEEDS).map(([k, v]) => [k, v.label])),
@@ -188,7 +189,7 @@ api.post('/live/session', async (req, res) => {
   const sdp = req.body?.sdp;
   if (typeof sdp !== 'string' || !sdp.trim()) return res.status(400).json({ error: 'SDP offer が必要です' });
   try {
-    const r = await live.start(sdp, typeof req.body?.brain === 'string' ? req.body.brain : undefined, typeof req.body?.voice === 'string' ? req.body.voice : undefined, { speed: req.body?.speed, tone: req.body?.tone }, req.body?.profile);
+    const r = await live.start(sdp, typeof req.body?.brain === 'string' ? req.body.brain : undefined, typeof req.body?.voice === 'string' ? req.body.voice : undefined, { speed: req.body?.speed, tone: req.body?.tone }, req.body?.profile, typeof req.body?.model === 'string' ? req.body.model : undefined);
     res.status(201).json(r);
   } catch (e) {
     const err = e as { status?: number; message?: string };

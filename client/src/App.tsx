@@ -14,10 +14,11 @@ const LABEL: Record<string, string> = {
 };
 const ELIG = ['emergency_signal', 'unsafe_to_continue_signal', 'towing_requested', 'injuries_present', 'all_occupants_injury_checked', 'other_person_or_vehicle_involved', 'third_party_property_involved', 'property_ownership', 'incident_kind', 'human_requested'];
 const VOICE_JA: Record<string, string> = { harema: '日本語・女性', shida: '日本語・男性', marin: '標準・英語系' };
+const LIVE_MODEL_JA: Record<string, string> = { 'gpt-live-1': '従来', 'gpt-live-1.1': '新・2026-11-20提供' };
 const ROUTE_JA: Record<string, string> = { TOWING: 'レッカー担当へ', SELF_SERVICE: 'AI受付（自動完結候補）', OPERATOR: 'オペレーターへ', OPERATOR_EMERGENCY: '緊急：オペレーターへ', UNRESOLVED: '確認中' };
 
 interface Cfg {
-  liveEnabled: boolean; brains: Record<string, string>; defaultBrain: string; liveModel: string; liveVoice: string; liveVoices: string[]; speechSpeeds: Record<string, string>; speechTones: Record<string, string>; defaultSpeed: string; defaultTone: string;
+  liveEnabled: boolean; brains: Record<string, string>; defaultBrain: string; liveModel: string; liveModels: string[]; liveVoice: string; liveVoices: string[]; speechSpeeds: Record<string, string>; speechTones: Record<string, string>; defaultSpeed: string; defaultTone: string;
   liveUsage: { activeSessions: number; sessionsToday: number; maxPerDay: number; maxSessionSeconds: number } | null;
   faults: { rpa: string; transfer: string }; cases: { id: string; title: string; expected: string }[]; evalMaxLlmRuns: number;
   summary: Record<string, unknown>;
@@ -76,6 +77,7 @@ function Main() {
 function CallView({ cfg, reloadCfg }: { cfg: Cfg; reloadCfg: () => void }) {
   const [conv, setConv] = useState<Conv | null>(null);
   const [brain, setBrain] = useState(cfg.defaultBrain);
+  const [liveModel, setLiveModel] = useState(cfg.liveModel);
   const [voice, setVoice] = useState(cfg.liveVoice);
   const [speed, setSpeed] = useState(cfg.defaultSpeed);
   const [tone, setTone] = useState(cfg.defaultTone);
@@ -105,7 +107,7 @@ function CallView({ cfg, reloadCfg }: { cfg: Cfg; reloadCfg: () => void }) {
   const startVoice = async () => {
     setBusy(true); setStatus('接続中…（マイクの使用を許可してください）');
     try {
-      const h = await startLive({ brain, voice, speed, tone, profile, audio: audioRef.current!, onStatus: setStatus, onClosed: (r) => { setStatus(`通話終了（${r}）`); liveRef.current = null; reloadCfg(); } });
+      const h = await startLive({ brain, model: liveModel, voice, speed, tone, profile, audio: audioRef.current!, onStatus: setStatus, onClosed: (r) => { setStatus(`通話終了（${r}）`); liveRef.current = null; reloadCfg(); } });
       liveRef.current = h; follow(h.conversationId); setMuted(false);
     } catch (e) { setStatus(`開始できません: ${(e as Error).message}`); }
     setBusy(false);
@@ -134,6 +136,11 @@ function CallView({ cfg, reloadCfg }: { cfg: Cfg; reloadCfg: () => void }) {
             <label>受付Brain：
               <select value={brain} onChange={(e) => setBrain(e.target.value)} disabled={!ended}>
                 {Object.entries(cfg.brains).map(([k, n]) => <option key={k} value={k}>{k === 'rule' ? 'Deterministic比較（API不使用）' : `LLM (${n})`}</option>)}
+              </select>
+            </label>
+            <label>音声モデル：
+              <select value={liveModel} onChange={(e) => setLiveModel(e.target.value)} disabled={!ended}>
+                {(cfg.liveModels ?? [cfg.liveModel]).map((m) => <option key={m} value={m}>{LIVE_MODEL_JA[m] ? `${m}（${LIVE_MODEL_JA[m]}）` : m}</option>)}
               </select>
             </label>
             <label>話者（声）：
@@ -172,7 +179,7 @@ function CallView({ cfg, reloadCfg }: { cfg: Cfg; reloadCfg: () => void }) {
           </div>
           <audio ref={audioRef} autoPlay controls className="audio" />
           <p className="muted small">{status}</p>
-          {cfg.liveUsage && <p className="muted small">Live: {cfg.liveModel} / 声・話し方は通話開始時に固定（途中変更不可、音声モードのみ有効） ・本日 {cfg.liveUsage.sessionsToday}/{cfg.liveUsage.maxPerDay} セッション・1通話上限 {cfg.liveUsage.maxSessionSeconds}秒{conv?.live.sessionId ? ` ・音声 ${conv.live.voiceSeconds.toFixed(0)}秒（約$${(conv.live.voiceSeconds / 60 * 0.05).toFixed(3)}＋Brain費用）` : ''}</p>}
+          {cfg.liveUsage && <p className="muted small">Live: {conv?.live.model ?? liveModel} / モデル・声・話し方は通話開始時に固定（途中変更不可、音声モードのみ有効） ・本日 {cfg.liveUsage.sessionsToday}/{cfg.liveUsage.maxPerDay} セッション・1通話上限 {cfg.liveUsage.maxSessionSeconds}秒{conv?.live.sessionId ? ` ・音声 ${conv.live.voiceSeconds.toFixed(0)}秒（約$${(conv.live.voiceSeconds / 60 * 0.05).toFixed(3)}＋Brain費用）` : ''}</p>}
           {!cfg.liveEnabled && <p className="warn small">OPENAI_API_KEY が未設定のため音声は無効です（テキストのDeterministicモードは利用可）。</p>}
         </div>
 

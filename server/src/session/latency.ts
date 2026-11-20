@@ -51,6 +51,8 @@ export interface TurnTrace {
   brain: string;
   effort: string | null;
   mode: 'text' | 'live';
+  /** 音声モデル（gpt-live-1 / gpt-live-1.1）。テキスト経路では入れない */
+  liveModel?: string;
   fastPath: 'off' | 'hit' | 'miss';
   fastPathRule?: string;
   fallbackReason?: string;
@@ -107,6 +109,7 @@ export interface TurnSummary {
   brain: string;
   effort: string | null;
   mode: 'text' | 'live';
+  liveModel: string | null;
   turns: number;
   fastPathHits: number;
   fastPathMisses: number;
@@ -117,12 +120,12 @@ export interface TurnSummary {
   durations: Record<string, Stat>;
 }
 
-/** プロファイル×Brain×推論量×モードごとにP50/P95をまとめる */
+/** モード×音声モデル×プロファイル×Brain×推論量ごとにP50/P95をまとめる */
 export function summarize(turns: TurnTrace[]): TurnSummary[] {
   const groups = new Map<string, TurnTrace[]>();
   for (const t of turns) {
     if (t.status !== 'answered') continue;
-    const k = `${t.mode}|${t.profile}|${t.brain}|${t.effort ?? '-'}`;
+    const k = `${t.mode}|${t.liveModel ?? '-'}|${t.profile}|${t.brain}|${t.effort ?? '-'}`;
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k)!.push(t);
   }
@@ -138,6 +141,7 @@ export function summarize(turns: TurnTrace[]): TurnSummary[] {
       brain: ts[0].brain,
       effort: ts[0].effort,
       mode: ts[0].mode,
+      liveModel: ts[0].liveModel ?? null,
       turns: ts.length,
       fastPathHits: hits,
       fastPathMisses: misses,

@@ -795,6 +795,7 @@ export class SessionController {
       brain: this.opts.brains[c.brainName]?.name ?? c.brainName,
       effort: (this.opts.brains[c.brainName] as { defaultEffort?: string | null } | undefined)?.defaultEffort ?? null,
       mode: c.mode,
+      ...(c.mode === 'live' && c.live.model ? { liveModel: c.live.model } : {}),
       fastPath: 'off',
       marks: {},
       live: {},
@@ -826,7 +827,7 @@ export class SessionController {
     if (!t) return;
     t.status = status;
     t.durations = computeDurations(t);
-    if (status === 'answered') c.log('turn_latency', { turnId: t.turnId, profile: t.profile, brain: t.brain, effort: t.effort, fastPath: t.fastPath, fallbackReason: t.fallbackReason, durations: t.durations, errors: t.errors });
+    if (status === 'answered') c.log('turn_latency', { turnId: t.turnId, liveModel: t.liveModel, profile: t.profile, brain: t.brain, effort: t.effort, fastPath: t.fastPath, fallbackReason: t.fallbackReason, durations: t.durations, errors: t.errors });
   }
 
   /**

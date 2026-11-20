@@ -1,4 +1,4 @@
-// LiveAdapter：GPT-Live（gpt-live-1）とのWebRTCセッション作成と、サーバ側sideband接続。
+// LiveAdapter：GPT-Live（gpt-live-1 / gpt-live-1.1）とのWebRTCセッション作成と、サーバ側sideband接続。
 // GPT-LiveとRealtime APIのイベントを混同しないため、Live固有のイベント処理はこのファイルに隔離する。
 //
 // 公式ドキュメント（2026-11-06確認）と openai npm 7.53.0 の型定義に基づく：
@@ -19,6 +19,8 @@ import { GREETING_QUESTION_KEY } from '../domain/questions.js';
 export interface LiveConfig {
   apiKey: string;
   model: string;
+  /** 画面で選べる音声モデル（許可リスト）。未指定なら model のみ */
+  models?: string[];
   voice: string;
   voices: string[];
   maxSessionSeconds: number;
@@ -30,6 +32,11 @@ export interface LiveConfig {
   fillerAfterMs: number;
   /** D20：B/Cで次の質問が決まったのに委任が来ないとき、この時間で自分から質問する（0で無効） */
   proactiveAfterMs?: number;
+}
+
+/** 画面から要求された音声モデルを許可リストで検証する。リスト外・未指定なら既定に戻す（D21） */
+export function resolveLiveModel(req: unknown, allowed: string[] | undefined, fallback: string): string {
+  return typeof req === 'string' && (allowed ?? [fallback]).includes(req) ? req : fallback;
 }
 
 /** 分析が長引いたときのつなぎ言葉（Takaさん指定 2026-11-06） */
@@ -85,7 +92,8 @@ export class LiveAdapter {
   usage() { return { activeSessions: this.activeCount(), sessionsToday: this.dayCount, maxPerDay: this.cfg.maxSessionsPerDay, maxConcurrent: this.cfg.maxConcurrent, maxSessionSeconds: this.cfg.maxSessionSeconds }; }
 
   /** ブラウザのSDP offerを受け取り、Liveセッションを作成してSDP answerを返す */
-  async start(sdp: string, brain?: string, voiceReq?: string, styleReq?: { speed?: unknown; tone?: unknown }, profile?: unknown): Promise<{ conversationId: string; sdp: string; liveSessionId: string; voice: string; speed: string; tone: string; profile: string }> {
+  async start(sdp: string, brain?: string, voiceReq?: string, styleReq?: { speed?: unknown; tone?: unknown }, profile?: unknown, modelReq?: string): Promise<{ conversationId: string; sdp: string; liveSessionId: string; model: string; voice: string; speed: string; tone: string; profile: string }> {
+    const model = resolveLiveModel(modelReq, this.cfg.models, this.cfg.model);
     const voice = voiceReq && this.cfg.voices.includes(voiceReq) ? voiceReq : this.cfg.voice;
     const { speed, tone } = normalizeStyle(styleReq?.speed, styleReq?.tone);
     const today = new Date().toISOString().slice(0, 10);
@@ -95,9 +103,10 @@ export class LiveAdapter {
 
     const sink = this.makeSink();
     const conv = this.ctl.create('live', sink, brain, profile);
+    conv.live.model = model;
     const res = await this.client.live.create({
       session: {
-        model: this.cfg.model,
+        model,
         instructions: buildLiveInstructions(speed, tone),
         audio: { output: { voice } },
         delegation: { type: 'client' },
@@ -118,7 +127,7 @@ export class LiveAdapter {
     this.dayCount += 1;
     const liveSessionId = res.session.id;
     conv.live.sessionId = liveSessionId;
-    conv.log('live_session_created', { liveSessionId, model: this.cfg.model, voice, speed, tone, store: false });
+    conv.log('live_session_created', { liveSessionId, model, voice, speed, tone, store: false });
     const rt: LiveRuntime = { sideband: null, inBuf: { text: '' }, outBuf: { text: '' }, outstandingDelegations: [], readbackEventIds: new Map(), pendingReadback: null, seq: 0, closed: false, exactSpeaking: false, exactQueue: [], fillerSpeaking: false, answerEventId: null, outEndAtSend: -1, lastOutEndMs: -1, ...LiveAdapter.d20Init() };
     this.runtimes.set(conv.id, rt);
     this.attach(conv, rt, liveSessionId);
@@ -126,7 +135,7 @@ export class LiveAdapter {
       conv.log('live_max_duration_reached', { seconds: this.cfg.maxSessionSeconds });
       this.close(conv, 'max_duration');
     }, this.cfg.maxSessionSeconds * 1000);
-    return { conversationId: conv.id, sdp: res.transport.sdp, liveSessionId, voice, speed, tone, profile: conv.profile.name };
+    return { conversationId: conv.id, sdp: res.transport.sdp, liveSessionId, model, voice, speed, tone, profile: conv.profile.name };
   }
 
   /** テスト用：ネットワークに接続せずに会話とruntimeを作る。sidebandへの送信は sent に記録し、emitでサーバイベントを注入する */
