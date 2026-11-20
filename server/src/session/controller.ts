@@ -17,7 +17,7 @@ import { ActionGate } from '../gate/actionGate.js';
 import type { BrainContext, ReceptionBrain, ReceptionPlan } from '../brain/types.js';
 import type { FactProposal } from '../domain/facts.js';
 import { Conversation, type AnalysisRecord } from './conversation.js';
-import { GREETING_QUESTION_KEY, NARRATIVE_QUESTION, QUESTION_TEXT, SAFETY_QUESTION, selectNextQuestion } from '../domain/questions.js';
+import { GREETING_QUESTION_KEY, NARRATIVE_QUESTION, QUESTION_TEXT, SAFETY_QUESTION, normalizePolicyNumber, policyQuestionsExhausted, selectNextQuestion } from '../domain/questions.js';
 import { questionWasSpoken, tryFastPath } from '../brain/fastPath.js';
 import { computeDurations, resolveProfile, type MarkName, type ProfileName, type TurnTrace } from './latency.js';
 
@@ -320,6 +320,8 @@ export class SessionController {
     const newVersion = c.version + 1;
     const prevRoute = c.route.route;
     for (const p of plan.factProposals) {
+      // D26：証券番号の表記をそろえる（「Cの123456789」→ C123456789）
+      if (p.key === 'policy_number' && p.status === 'captured' && typeof p.value === 'string') p.value = normalizePolicyNumber(p.value);
       const issue = validateProposal(p, known);
       if (issue) { rejected.push(issue); continue; }
       if (applyProposal(c.facts, p, newVersion)) changedKeys.push(p.key);
@@ -473,7 +475,9 @@ export class SessionController {
     const policyGivenUp = c.facts.policy_number.status === 'explicitly_unknown' && c.facts.vehicle_plate.status !== 'captured';
     const unresolvable = unresolvableRequired(c.facts);
     const onlyPolicyMissing = miss.length === 1 && miss[0] === 'policy_match';
-    if ((onlyPolicyMissing && policyGivenUp) || unresolvable.length) {
+    // D26：契約確認を聞き尽くしても見つからない（同じ質問を繰り返さない）→ 有人で確認する
+    const policyExhausted = policyQuestionsExhausted(c.facts, c.askedCounts);
+    if ((onlyPolicyMissing && (policyGivenUp || policyExhausted)) || unresolvable.length) {
       if (c.receptionState === 'HANDOFF_PENDING') return;
       c.receptionState = 'HANDOFF_PENDING';
       c.log('handoff_pending', { reason: onlyPolicyMissing ? 'policy_unresolved' : `unresolvable:${unresolvable.join(',')}` });

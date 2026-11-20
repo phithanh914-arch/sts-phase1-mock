@@ -40,6 +40,9 @@ const EXTRACTION_RULES = `# 抽出ルール
 - 日時は元の表現を original_expression に残す。「昨夜」を00:00にしない（時刻不明なら accident_time を提案しない）。日付は today を基準にYYYY-MM-DD、時刻はHH:MM。
 - 訂正（「と言いましたが」等）は is_correction=true で新しい値を提案。
 - 電話番号は数字のみ。氏名は読み（カタカナ）で記録し、漢字を推測で確定しない。
+  - 氏名の発話が漢字で文字起こしされている場合（例：「北川隆司です」）、読みは推測になる。caller_name_kana には推測した読みを入れ、original_expression には文字起こしのとおり漢字のまま入れる（読みが推測だとアプリが判断するため）。
+  - 「キ、タ、ガ、ワ」のように一文字ずつ区切って言われた読みは、つなげてカタカナで記録し（例：キタガワタカトシ）、is_correction=true とする。original_expression には区切ったままの読みを入れる。
+- 証券番号は英字と数字をつなげて記録する（「Cの123456789」→ C123456789、「シー」→ C）。
 - ただし発話では「カタカナで」「読みで」と言わない。電話なので「お名前をお伺いできますか」のように普通に聞く。
 - evidence_refs には根拠となった発話IDを必ず入れる（存在するIDのみ）。
 - pending_confirmation があり、直前のAI発話がその読上げなら、顧客の応答を confirmation_response (affirm/deny/correction/none) に分類。無音や曖昧な返事は none。
