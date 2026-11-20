@@ -30,16 +30,24 @@ export interface LiveConfig {
   delegationWaitMs: number;
   /** 委任の結果がこの時間内に出なければ「確認いたします」と言う（0で無効） */
   fillerAfterMs: number;
-  /** D22：委任時の自動の相づち（「はい」）までの待ち時間（ms）。未指定ならAPIの既定（0：すぐ言う） */
+  /** D22：委任時の自動の相づち（「はい」）までの待ち時間（ms、APIの許容は0〜800）。未指定ならAPIの既定（0：すぐ言う） */
   ackDelayMs?: number;
+  /** D23：すぐ答えられない委任では、会話メモ（thinking）を送って自動の相づちを取り消す */
+  ackCancel?: boolean;
   /** D20：B/Cで次の質問が決まったのに委任が来ないとき、この時間で自分から質問する（0で無効） */
   proactiveAfterMs?: number;
 }
 
-/** 委任の設定（D22）。ackDelayMs が0以上なら自動の相づちまでの待ち時間を指定する */
+/** APIが受け付ける acknowledgement_delay_ms の上限（公式：0〜800ms。8000を送ると通話が切れた） */
+export const MAX_ACK_DELAY_MS = 800;
+
+/** 委任の設定（D22/D23）。ackDelayMs が0以上なら自動の相づちまでの待ち時間を指定する（上限800msに丸める） */
 export function liveDelegation(ackDelayMs?: number): { type: 'client'; acknowledgement_delay_ms?: number } {
-  return typeof ackDelayMs === 'number' && Number.isFinite(ackDelayMs) && ackDelayMs >= 0 ? { type: 'client', acknowledgement_delay_ms: Math.round(ackDelayMs) } : { type: 'client' };
+  return typeof ackDelayMs === 'number' && Number.isFinite(ackDelayMs) && ackDelayMs >= 0 ? { type: 'client', acknowledgement_delay_ms: Math.min(Math.round(ackDelayMs), MAX_ACK_DELAY_MS) } : { type: 'client' };
 }
+
+/** D23：自動の相づちを取り消すための会話メモ。話す内容は含めない */
+export const ACK_CANCEL_NOTE = 'バックエンドで確認中。何も言わずに結果を待つ。';
 
 /** 画面から要求された音声モデルを許可リストで検証する。リスト外・未指定なら既定に戻す（D21） */
 export function resolveLiveModel(req: unknown, allowed: string[] | undefined, fallback: string): string {
@@ -134,7 +142,7 @@ export class LiveAdapter {
     this.dayCount += 1;
     const liveSessionId = res.session.id;
     conv.live.sessionId = liveSessionId;
-    conv.log('live_session_created', { liveSessionId, model, voice, speed, tone, ackDelayMs: this.cfg.ackDelayMs ?? null, store: false });
+    conv.log('live_session_created', { liveSessionId, model, voice, speed, tone, ackDelayMs: this.cfg.ackDelayMs ?? null, ackCancel: !!this.cfg.ackCancel, store: false });
     const rt: LiveRuntime = { sideband: null, inBuf: { text: '' }, outBuf: { text: '' }, outstandingDelegations: [], readbackEventIds: new Map(), pendingReadback: null, seq: 0, closed: false, exactSpeaking: false, exactQueue: [], fillerSpeaking: false, answerEventId: null, outEndAtSend: -1, lastOutEndMs: -1, ...LiveAdapter.d20Init() };
     this.runtimes.set(conv.id, rt);
     this.attach(conv, rt, liveSessionId);
@@ -268,8 +276,13 @@ export class LiveAdapter {
         }
         clearTimeout(rt.inTimer);
         this.flushIn(conv, rt);
+        const answerNow = !(conv.unanalyzedCustomerUtterances().length > 0 || conv.analysisInFlight) && conv.profile.answerDelegationWithoutWait && this.turnAlreadyCaptured(conv);
+        if (!answerNow && this.cfg.ackCancel) {
+          // D23：すぐには答えられない → 会話メモを送って自動の相づち（「はい」）を取り消す。委任IDは付けない（委任は応答時に閉じる）
+          this.send(conv, rt, { type: 'session.thinking.append', event_id: this.eid(conv, rt, 'ackcancel'), delegation_id: null, content: ACK_CANCEL_NOTE });
+        }
         if (conv.unanalyzedCustomerUtterances().length > 0 || conv.analysisInFlight) void this.ctl.requestAnalysis(conv, 'delegation', null);
-        else if (conv.profile.answerDelegationWithoutWait && this.turnAlreadyCaptured(conv)) {
+        else if (answerNow) {
           // D18：このターンの発話はすでに受け取り、分析も終わっている（Fast Path等）。待たずに次の質問を返す
           conv.log('delegation_answered_without_wait', { id: d.delegation.id });
           this.ctl.respondCurrent(conv, null);
