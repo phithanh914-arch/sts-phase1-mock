@@ -438,9 +438,10 @@ export class LiveAdapter {
     return {
       deliver: (conv: Conversation, d: SpeechDirective, _delegationId: string | null, solicited: boolean) => {
         const rt = this.runtimes.get(conv.id);
-        // 予定発話として記録（実際の出力transcriptとは区別）
-        this.ctl.addUtterance(conv, { speaker: 'ai', text: d.text, kind: 'planned', source: 'live', tag: d.tag });
-        if (!rt) return;
+        // 予定発話として記録（実際の出力transcriptとは区別）。GPT-Liveに話させる指示を送るときだけ記録する。
+        // 委任前に決まった結果（送らずに委任を待つ／参考として伝えるだけ）は記録しない。委任時に同じ質問を送るときに1回だけ記録される（D24）
+        const recordPlanned = () => this.ctl.addUtterance(conv, { speaker: 'ai', text: d.text, kind: 'planned', source: 'live', tag: d.tag });
+        if (!rt) { recordPlanned(); return; }
         const delegationId = rt.outstandingDelegations.shift() ?? null;
         if (delegationId) clearTimeout(rt.fillerTimer);
         const eventId = this.eid(conv, rt, d.kind);
@@ -448,10 +449,12 @@ export class LiveAdapter {
         const noWait = conv.profile.answerDelegationWithoutWait;
         if (noWait && rt.proactiveSending) {
           // D20：委任が来ないため、自分から今の質問を話す（前の発話が終わっていなければ待つ）
+          recordPlanned();
           this.sendExact(conv, rt, eventId, null, d.text, false);
         } else if (d.exact || delegationId || solicited) {
           // 2026-11-06（D14）：質問も含め、話す内容はすべて「そのまま伝えて」で渡す。commentaryだと音声側が質問を付け足すため。
           // 委任への応答と緊急案内はすぐ送る。委任なしの追加案内（転送結果など）は前の発話が終わるまで待つ
+          recordPlanned();
           this.sendExact(conv, rt, eventId, delegationId, d.text, !delegationId && d.kind !== 'emergency');
         } else if (noWait) {
           // D20（B/C）：委任より先に結果が出た。thinkingの先送りは委任・相づちを止めた疑いがあるため送らず（要検証）、

@@ -259,3 +259,24 @@ describe('Live：自動の相づちの取り消し（D23）', () => {
     expect(ackCancels(s)).toHaveLength(0);
   });
 });
+
+describe('Live：送信予定（AI(予定)）の記録（D24）', () => {
+  const planned = (s: ReturnType<typeof setup>, text: string) => s.conv.utterances.filter((u) => u.kind === 'planned' && u.text.includes(text));
+  it('Hybrid：委任より先に決まった質問は、委任時に送るときの1回だけ記録する', async () => {
+    const s = setup('hybrid');
+    await customerSays(s, 'いいえ、不要です', 6000);
+    expect(planned(s, '急いで対応が必要な状況')).toHaveLength(0);
+    s.emit({ type: 'session.delegation.created', delegation: { id: 'dlg_1', target: 'client' }, offset_ms: 6600 });
+    expect(planned(s, '急いで対応が必要な状況')).toHaveLength(1);
+  });
+  it('Baseline：参考として伝えた結果は記録せず、委任への応答の1回だけ記録する', async () => {
+    const s = setup('baseline');
+    await customerSays(s, 'いいえ、不要です', 6000);
+    s.emit({ type: 'session.delegation.created', delegation: { id: 'dlg_1', target: 'client' }, offset_ms: 6600 });
+    await wait(1300);
+    // 送った指示（名乗りを除く）と送信予定の記録が1対1になる
+    const all = s.conv.utterances.filter((u) => u.kind === 'planned');
+    expect(all).toHaveLength(s.appended().length - 1);
+    expect(new Set(all.map((u) => u.text)).size).toBe(all.length);
+  });
+});
