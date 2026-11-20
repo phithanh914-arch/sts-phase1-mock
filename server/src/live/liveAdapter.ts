@@ -91,6 +91,8 @@ interface LiveRuntime {
   proactiveCustomerCount: number | null;
   /** 委任待ちの間に送らずに保留した会話状況のメモ */
   pendingCtx: string | null;
+  /** D25：自分から（委任なしで）最後に話した質問と、その時点の受付データの版 */
+  lastProactive: { key: string | null; version: number } | null;
 }
 
 export class LiveAdapter {
@@ -162,7 +164,7 @@ export class LiveAdapter {
     return { conv, sent, emit: (ev) => this.onEvent(conv, rt, ev) };
   }
 
-  private static d20Init() { return { awaitingDelegation: false, proactiveSending: false, proactiveCustomerCount: null, pendingCtx: null }; }
+  private static d20Init() { return { awaitingDelegation: false, proactiveSending: false, proactiveCustomerCount: null, pendingCtx: null, lastProactive: null }; }
 
   private customerCount(conv: Conversation) { return conv.utterances.filter((u) => u.speaker === 'customer').length; }
 
@@ -179,6 +181,13 @@ export class LiveAdapter {
       if (rt.outBuf.text || rt.exactSpeaking) { this.armProactive(conv, rt, 500); return; }
       const t = this.ctl.currentTurn(conv);
       if (t?.marks.speech_sent !== undefined) return;
+      // D25：同じ質問を自分からすでに話し、その後に受付データが何も変わっていない → 繰り返さない。
+      // （例：質問の途中で顧客が前の答えを言い直した → 何も増えず同じ質問に戻る。GPT-Liveが質問を言い直すこともある）
+      // 顧客が話せば委任が来るので、そこで答える
+      if (rt.lastProactive && rt.lastProactive.key === conv.lastQuestionKey && rt.lastProactive.version === conv.version) {
+        conv.log('proactive_repeat_skipped', { questionKey: conv.lastQuestionKey });
+        return;
+      }
       conv.log('proactive_answer_without_delegation', { afterMs: ms });
       rt.proactiveSending = true;
       try { this.ctl.respondCurrent(conv, null); } finally { rt.proactiveSending = false; }
@@ -414,8 +423,8 @@ export class LiveAdapter {
     rt.exactTimer = setTimeout(() => this.exactDone(conv, rt), 10000);
     const proactive = !delegationId && rt.proactiveSending;
     if (delegationId || proactive) {
-      if (proactive) rt.proactiveCustomerCount = this.customerCount(conv);
-      else rt.proactiveCustomerCount = null;
+      if (proactive) { rt.proactiveCustomerCount = this.customerCount(conv); rt.lastProactive = { key: conv.lastQuestionKey, version: conv.version }; }
+      else { rt.proactiveCustomerCount = null; rt.lastProactive = null; }
       // 遅延計測：このターンの応答（委任への答え）を送った時刻
       rt.answerEventId = eventId;
       rt.outEndAtSend = rt.lastOutEndMs;

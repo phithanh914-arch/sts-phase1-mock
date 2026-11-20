@@ -379,6 +379,15 @@ export class SessionController {
       } else if (plan.suggestedSpeech) directives.push({ kind: 'question', text: plan.suggestedSpeech, exact: false });
     }
     this.turnMark(c, 'decision_done', true);
+    // D25：分析中に顧客が続きを話した（再分析待ち）なら、この結果で決めた質問は古い。話さずに再分析の結果で答える
+    // （例：「今日の」だけで分析 → 続きの「22時です」があるのに「何時ごろでしたか」と聞いてしまう）。緊急・転送・確認の案内は止めない
+    if (this.rerun.has(c.id) && c.unanalyzedCustomerUtterances().length > 0) {
+      const stale = directives.filter((d) => d.kind === 'question' || d.kind === 'notice');
+      if (stale.length) {
+        c.log('stale_question_suppressed', { analysisId: rec.analysisId, questionKeys: stale.map((d) => d.questionKey ?? null), pending: c.unanalyzedCustomerUtterances().map((u) => u.id) });
+        for (const d of stale) directives.splice(directives.indexOf(d), 1);
+      }
+    }
     const delegationId = rec.delegationId;
     directives.forEach((d, i) => this.speak(c, d, i === 0 ? delegationId : null, i === 0 && !!delegationId || c.mode === 'text'));
     this.sinks.get(c.id)?.context?.(c, this.contextSummary(c), null);
