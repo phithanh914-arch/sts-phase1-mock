@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptyFacts } from './facts.js';
-import { NAME_READING_QUESTION, nameReadingIsGuess, normalizePolicyNumber, policyQuestion, policyQuestionsExhausted, selectNextQuestion, spokenId } from './questions.js';
+import { nameFromEcho, nameReadingIsGuess, normalizePolicyNumber, policyQuestion, policyQuestionsExhausted, selectNextQuestion, spokenId } from './questions.js';
 import type { Fact, RouteDecision } from './types.js';
 
 const fact = (key: string, value: string, originalExpression?: string, status: Fact['status'] = 'captured'): Fact =>
@@ -54,9 +54,17 @@ describe('D26 氏名の読みが漢字からの推測か', () => {
   it('確認済みなら聞かない', () => {
     expect(nameReadingIsGuess(fact('caller_name_kana', 'キタガワ リュウジ', '北川隆司', 'confirmed'))).toBe(false);
   });
-  it('推測なら次の質問の前に読み方を1回だけ聞く', () => {
+  it('推測でも、読み方を一文字ずつ聞く質問はしない（D27）', () => {
     const facts = { ...emptyFacts(), caller_name_kana: fact('caller_name_kana', 'キタガワ リュウジ', '北川隆司です') };
-    expect(selectNextQuestion({ facts, route: self, policyMatched: false, asked: {} })).toEqual(NAME_READING_QUESTION);
-    expect(selectNextQuestion({ facts, route: self, policyMatched: false, asked: { [NAME_READING_QUESTION.key]: 1 } })?.key).not.toBe(NAME_READING_QUESTION.key);
+    expect(selectNextQuestion({ facts, route: self, policyMatched: false, asked: {} })?.text ?? '').not.toContain('一文字ずつ');
   });
+});
+
+describe('D27 GPT-Live の復唱から読みを取る', () => {
+  it.each([
+    ['キタガワタカトシ様ですね。折り返しの…', 'キタガワタカトシ'],
+    ['キタガワ タカトシ様ですね。', 'キタガワ タカトシ'],
+    ['「キタガワタカトシ」さまですね', 'キタガワタカトシ'],
+  ])('%s → %s', (spoken, want) => expect(nameFromEcho(spoken)).toBe(want));
+  it.each(['北川隆司様ですね。', 'きたがわ様ですね', '折り返しのお電話番号を教えてください。'])('%s → 使わない', (spoken) => expect(nameFromEcho(spoken)).toBeNull());
 });

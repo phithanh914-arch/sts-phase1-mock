@@ -37,8 +37,13 @@ export const QUESTION_TEXT: Record<string, string> = {
 export const SAFETY_QUESTION = { key: 'safety_check', text: '今、急いで対応が必要な状況はありますか。' };
 export const NARRATIVE_QUESTION = { key: 'accident_narrative', text: 'どのような事故だったか、お聞かせいただけますか。' };
 
-/** D26：氏名が漢字で文字起こしされ、読みが推測になっているときに1回だけ聞く */
-export const NAME_READING_QUESTION = { key: 'caller_name_reading', text: 'お名前の読み方を、一文字ずつ区切って教えていただけますか。' };
+/**
+ * D27：氏名が漢字で文字起こしされ、読みが推測になっているとき、次の質問の前に GPT-Live（音声を聞いている側）に
+ * 「〇〇様ですね」と聞こえた読みで復唱させる（1回だけ）。一文字ずつ聞き直すのは顧客体験を損なうため行わない。
+ */
+export const NAME_ECHO_KEY = 'caller_name_echo';
+/** 復唱で記録した氏名の元の表現に付ける印 */
+export const NAME_ECHO_MARK = '（AI復唱：';
 
 /** 漢字（CJK統合漢字）を含むか */
 const HAS_KANJI = /[\u3400-\u9FFF\uF900-\uFAFF]/;
@@ -56,6 +61,17 @@ export function nameReadingIsGuess(f?: Fact): boolean {
   const squash = (s: string) => s.normalize('NFKC').replace(/[\s\u3000・、。,]/g, '');
   const kana = squash(String(f!.value ?? ''));
   return !kana || !squash(orig).includes(kana);
+}
+
+/**
+ * D27：GPT-Live の復唱（「キタガワタカトシ様ですね。」）から、聞こえた読みを取り出す。
+ * カタカナ以外（漢字・ひらがな等）が混ざる場合は読みとして使わない（null）。
+ */
+export function nameFromEcho(spoken: string): string | null {
+  const m = /^[\s、。「]*(.+?)\s*(様|さま)/.exec(spoken.normalize('NFKC'));
+  if (!m) return null;
+  const name = m[1].replace(/[「」『』]/g, '').replace(/[\s\u3000]+/g, ' ').trim();
+  return /^[ァ-ヶー・ ]{2,}$/.test(name) ? name : null;
 }
 
 // D26：英字の読み（シー → C 等）。長い読みから置き換える
@@ -138,8 +154,6 @@ export function selectNextQuestion(s: { facts: Record<string, Fact>; route: Rout
     return k && QUESTION_TEXT[k] ? q(k) : { key: 'free', text: '状況を教えていただけますか。' };
   }
   if (s.route.route === 'SELF_SERVICE') {
-    // D26：氏名の読みが漢字からの推測なら、次の質問の前に読み方を1回だけ聞く
-    if (nameReadingIsGuess(s.facts.caller_name_kana) && !asked(NAME_READING_QUESTION.key)) return NAME_READING_QUESTION;
     const miss = missingForRegistration(s.facts, s.policyMatched);
     for (const k of REG_ORDER) {
       if (!miss.includes(k)) continue;

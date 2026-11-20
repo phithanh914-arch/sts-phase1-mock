@@ -327,3 +327,55 @@ describe('Live：古い質問・同じ質問の繰り返しを防ぐ（D25）', 
     expect(s.appended().at(-1)).toMatchObject({ delegation_id: 'dlg_2' });
   });
 });
+
+describe('Live：氏名の読みを GPT-Live の復唱で取る（D27）', () => {
+  async function nameGuessed() {
+    const s = setup('hybrid');
+    await wait(60);
+    s.ctl.primeFacts(s.conv, { towing_requested: false, injuries_present: false, all_occupants_injury_checked: true, other_person_or_vehicle_involved: false, third_party_property_involved: false, property_ownership: 'own', incident_kind: 'collision', caller_name_kana: 'キタガワ リュウジ' });
+    s.conv.facts.caller_name_kana.originalExpression = '北川隆司です';
+    s.conv.lastQuestion = '折り返しのお電話番号を教えてください。';
+    s.conv.lastQuestionKey = 'callback_phone';
+    const before = s.appended().length;
+    s.ctl.respondCurrent(s.conv, null);
+    return { s, sent: s.appended().slice(before) };
+  }
+
+  it('読みが漢字からの推測なら、次の質問の前に聞こえた読みで「〇〇様ですね」と復唱させる', async () => {
+    const { sent } = await nameGuessed();
+    expect(sent).toHaveLength(1);
+    expect(String(sent[0].content)).toContain('聞こえた読みのとおりカタカナで');
+    expect(String(sent[0].content)).toContain('折り返しのお電話番号');
+    expect(String(sent[0].content)).not.toContain('一文字ずつ');
+  });
+
+  it('復唱の読みを氏名の読みとして記録し、Brainの推測では上書きしない', async () => {
+    const { s, sent } = await nameGuessed();
+    s.emit({ type: 'session.output_transcript.delta', delta: 'キタガワタカトシ様ですね。折り返しのお電話番号を教えてください。', start_ms: 9000, end_ms: 12000, client_event_id: sent[0].event_id as string });
+    await wait(60);
+    expect(s.conv.facts.caller_name_kana.value).toBe('キタガワタカトシ');
+    // 2回目は復唱させない
+    const before = s.appended().length;
+    s.ctl.respondCurrent(s.conv, null);
+    await wait(10);
+    expect(String(s.appended().slice(before)[0]?.content ?? '')).not.toContain('様ですね');
+  });
+
+  it('復唱が漢字で文字起こしされたら、推測の読みのまま（最後の読上げで訂正できる）', async () => {
+    const { s, sent } = await nameGuessed();
+    s.emit({ type: 'session.output_transcript.delta', delta: '北川隆司様ですね。折り返しのお電話番号を教えてください。', start_ms: 9000, end_ms: 12000, client_event_id: sent[0].event_id as string });
+    await wait(60);
+    expect(s.conv.facts.caller_name_kana.value).toBe('キタガワ リュウジ');
+  });
+
+  it('読みが聞こえたとおり（カナ）なら復唱させない', async () => {
+    const s = setup('hybrid');
+    await wait(60);
+    s.ctl.primeFacts(s.conv, { caller_name_kana: 'テスト イチロウ' });
+    s.conv.lastQuestion = '折り返しのお電話番号を教えてください。';
+    s.conv.lastQuestionKey = 'callback_phone';
+    const before = s.appended().length;
+    s.ctl.respondCurrent(s.conv, null);
+    expect(String(s.appended().slice(before)[0].content)).not.toContain('様ですね');
+  });
+});

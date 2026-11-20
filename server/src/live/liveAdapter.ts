@@ -72,7 +72,9 @@ interface LiveRuntime {
   /** 「そのまま伝えて」指示を送ってから、その発話が終わる（出力transcriptが区切れる）までの間 true */
   exactSpeaking: boolean;
   /** 話している途中に届いた委任なしの「そのまま伝えて」指示（前の発話が終わってから送る） */
-  exactQueue: { eventId: string; text: string; delegationId: string | null }[];
+  exactQueue: { eventId: string; text: string; delegationId: string | null; nameEcho?: boolean }[];
+  /** D27：氏名の復唱を指示した発話を待っている */
+  pendingNameEcho?: boolean;
   exactTimer?: NodeJS.Timeout;
   fillerTimer?: NodeJS.Timeout;
   /** 今話しているのが「確認いたします」のつなぎ言葉か */
@@ -405,15 +407,17 @@ export class LiveAdapter {
       this.exactDone(conv, rt);
       return;
     }
-    this.ctl.aiSpoke(conv, text, 'live', tag, start, end);
+    const u = this.ctl.aiSpoke(conv, text, 'live', tag, start, end);
+    // D27：復唱の指示後、「様」を含む最初の発話を復唱とみなす（つなぎ言葉などは飛ばす）
+    if (rt.pendingNameEcho && /様|さま/.test(text)) { rt.pendingNameEcho = false; this.ctl.nameEchoSpoken(conv, text, u.id); }
     this.exactDone(conv, rt);
   }
 
   /** 「そのまま伝えて」指示を送る。前の指示を話している途中なら、話し終わってから送る（発話が混ざるのを防ぐ） */
-  private sendExact(conv: Conversation, rt: LiveRuntime, eventId: string, delegationId: string | null, text: string, queueable: boolean) {
+  private sendExact(conv: Conversation, rt: LiveRuntime, eventId: string, delegationId: string | null, text: string, queueable: boolean, nameEcho = false) {
     // つなぎ言葉の途中に届いた委任の結果は、言い終わってから送る（重なり防止）
     if ((queueable || rt.fillerSpeaking) && rt.exactSpeaking) {
-      rt.exactQueue.push({ eventId, text, delegationId });
+      rt.exactQueue.push({ eventId, text, delegationId, nameEcho });
       conv.log('exact_queued', { event_id: eventId });
       return;
     }
@@ -430,7 +434,12 @@ export class LiveAdapter {
       rt.outEndAtSend = rt.lastOutEndMs;
       this.ctl.turnMark(conv, 'speech_sent');
     } else if (text === FILLER_TEXT) this.ctl.turnMark(conv, 'filler_sent');
-    this.send(conv, rt, { type: 'session.instructions.append', event_id: eventId, delegation_id: delegationId, content: `今すぐ、次の内容を省略せずそのまま伝えてください：「${text}」` });
+    // D27：氏名の復唱。文字起こしは漢字になり読みが分からないため、音声を聞いた GPT-Live に聞こえた読みで言わせ、出力transcriptから読みを取る
+    if (nameEcho) rt.pendingNameEcho = true;
+    const content = nameEcho
+      ? `今すぐ、まずお客さまが先ほどおっしゃったお名前を、聞こえた読みのとおりカタカナで「（お名前）様ですね。」と一言で確認し、続けて次の内容を省略せずそのまま伝えてください：「${text}」`
+      : `今すぐ、次の内容を省略せずそのまま伝えてください：「${text}」`;
+    this.send(conv, rt, { type: 'session.instructions.append', event_id: eventId, delegation_id: delegationId, content });
     if (delegationId || proactive) this.answered(conv, rt);
   }
 
@@ -440,7 +449,7 @@ export class LiveAdapter {
     rt.fillerSpeaking = false;
     clearTimeout(rt.exactTimer);
     const next = rt.exactQueue.shift();
-    if (next && !rt.closed) this.sendExact(conv, rt, next.eventId, next.delegationId, next.text, false);
+    if (next && !rt.closed) this.sendExact(conv, rt, next.eventId, next.delegationId, next.text, false, next.nameEcho);
   }
 
   private makeSink(): SpeechSink {
@@ -459,12 +468,12 @@ export class LiveAdapter {
         if (noWait && rt.proactiveSending) {
           // D20：委任が来ないため、自分から今の質問を話す（前の発話が終わっていなければ待つ）
           recordPlanned();
-          this.sendExact(conv, rt, eventId, null, d.text, false);
+          this.sendExact(conv, rt, eventId, null, d.text, false, d.kind === 'question' && this.ctl.takeNameEcho(conv));
         } else if (d.exact || delegationId || solicited) {
           // 2026-11-06（D14）：質問も含め、話す内容はすべて「そのまま伝えて」で渡す。commentaryだと音声側が質問を付け足すため。
           // 委任への応答と緊急案内はすぐ送る。委任なしの追加案内（転送結果など）は前の発話が終わるまで待つ
           recordPlanned();
-          this.sendExact(conv, rt, eventId, delegationId, d.text, !delegationId && d.kind !== 'emergency');
+          this.sendExact(conv, rt, eventId, delegationId, d.text, !delegationId && d.kind !== 'emergency', d.kind === 'question' && this.ctl.takeNameEcho(conv));
         } else if (noWait) {
           // D20（B/C）：委任より先に結果が出た。thinkingの先送りは委任・相づちを止めた疑いがあるため送らず（要検証）、
           // 委任を待つ。来なければ見張りタイマーで自分から質問する
