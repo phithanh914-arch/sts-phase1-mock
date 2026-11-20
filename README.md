@@ -66,6 +66,7 @@ NODE_ENV=production APP_PASSWORD=... npm start   # http://127.0.0.1:8787
    - `OPENAI_API_KEY`：OpenAIのAPIキー（音声を使う場合）
    - `BRAIN_MODEL`：LLM Brainを使う場合のみ（空ならDeterministic）。カンマ区切りで複数指定すると画面の「受付Brain」で切り替え可能（先頭が既定）
    - `LATENCY_PROFILE`（任意）：応答速度の構成。`hybrid`（既定：質問はコード選択＋Fast Path）／`lightweight`／`baseline`（改善前）。画面でも通話ごとに選べる。詳細は [docs/latency-improvement.md](docs/latency-improvement.md)
+   - `LIVE_MODEL`（任意、既定 `gpt-live-1`）／`LIVE_MODELS`（任意、既定 `gpt-live-1,gpt-live-1.1`）：音声モデルの既定値と、画面の「音声モデル」で選べる候補。通話ごとに切り替えて比較できる（D21）
    - `LIVE_PROACTIVE_AFTER_MS`（任意、既定1500）：B/Cで、次の質問が決まったのにGPT-Liveから委任が来ないとき、自分から質問するまでの時間（ミリ秒）。0で無効（D20）
 4. **Apply** → ビルド完了後に表示される `https://sts-phase1-mock-xxxx.onrender.com` を別PCのブラウザで開く
 5. パスワードでログイン → 「音声で開始」→ マイクを許可
@@ -73,7 +74,7 @@ NODE_ENV=production APP_PASSWORD=... npm start   # http://127.0.0.1:8787
 注意：
 - 無料枠は15分無操作でスリープし、次のアクセス時に起動まで約1分かかります。
 - ファイル保存は再起動で消えます（会話ログは検証用の一時保存）。
-- 費用：GPT-Liveは公式記載で $0.05/分（秒課金、WebRTC開始時に15秒分を計上）＋Brain利用分。上限は `LIVE_MAX_SESSION_SECONDS` / `LIVE_MAX_SESSIONS_PER_DAY` / `LIVE_MAX_CONCURRENT` で制御。
+- 費用：GPT-Liveは公式記載で $0.05/分（秒課金、WebRTC開始時に15秒分を計上。gpt-live-1.1 も同額）＋Brain利用分。上限は `LIVE_MAX_SESSION_SECONDS` / `LIVE_MAX_SESSIONS_PER_DAY` / `LIVE_MAX_CONCURRENT` で制御。
 
 ## 画面
 

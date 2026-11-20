@@ -89,7 +89,7 @@ export class Conversation {
   desiredInformation: string[] = [];
   lastBriefReason = '';
   audit: AuditEntry[] = [];
-  live: { sessionId: string | null; startedAt: string | null; voiceSeconds: number; closedReason: string | null } = { sessionId: null, startedAt: null, voiceSeconds: 0, closedReason: null };
+  live: { sessionId: string | null; model: string | null; startedAt: string | null; voiceSeconds: number; closedReason: string | null } = { sessionId: null, model: null, startedAt: null, voiceSeconds: 0, closedReason: null };
   seq = 0;
 
   constructor(id: string, claimId: string, mode: 'text' | 'live', brainName: string, jobs: Map<string, JobRecord>) {

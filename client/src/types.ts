@@ -24,7 +24,7 @@ export interface Conv {
   turns: Turn[];
   customerNeeds: string[]; amendmentPending: boolean; nextIntent: string; desiredInformation: string[]; lastBriefReason: string;
   audit: { at: string; event: string; detail?: unknown }[];
-  live: { sessionId: string | null; voiceSeconds: number };
+  live: { sessionId: string | null; model: string | null; voiceSeconds: number };
 }
 
 export interface Turn {

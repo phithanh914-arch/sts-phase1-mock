@@ -12,6 +12,8 @@ export const config = {
   sessionSecret: process.env.SESSION_SECRET || randomBytes(32).toString('hex'),
   openaiApiKey: process.env.OPENAI_API_KEY ?? '',
   liveModel: process.env.LIVE_MODEL || 'gpt-live-1',
+  // 画面で選べる音声モデル（許可リスト）。gpt-live-1.1 は 2026-11-20 API提供開始（gpt-live-1 と同料金 $0.05/分、同時接続枠は別）
+  liveModels: [...new Set([process.env.LIVE_MODEL || 'gpt-live-1', ...(process.env.LIVE_MODELS || 'gpt-live-1,gpt-live-1.1').split(',').map((s) => s.trim()).filter(Boolean)])],
   // 既定は日本語の声 harema（公式Voice optionsで Japanese / Feminine）。shida は Japanese / Masculine。
   liveVoice: process.env.LIVE_VOICE || 'harema',
   // 画面で選べる声（許可リスト）
@@ -49,6 +51,7 @@ export function configSummary() {
     sessionSecretFromEnv: !!process.env.SESSION_SECRET,
     openaiKeySet: !!config.openaiApiKey,
     liveModel: config.liveModel,
+    liveModels: config.liveModels,
     liveVoice: config.liveVoice,
     brainModels: config.brainModels.length ? config.brainModels : '(未設定: Deterministicのみ)',
     brainReasoningEffort: config.brainReasoningEffort || '(指定なし)',
