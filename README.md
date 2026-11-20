@@ -67,6 +67,7 @@ NODE_ENV=production APP_PASSWORD=... npm start   # http://127.0.0.1:8787
    - `BRAIN_MODEL`：LLM Brainを使う場合のみ（空ならDeterministic）。カンマ区切りで複数指定すると画面の「受付Brain」で切り替え可能（先頭が既定）
    - `LATENCY_PROFILE`（任意）：応答速度の構成。`hybrid`（既定：質問はコード選択＋Fast Path）／`lightweight`／`baseline`（改善前）。画面でも通話ごとに選べる。詳細は [docs/latency-improvement.md](docs/latency-improvement.md)
    - `LIVE_MODEL`（任意、既定 `gpt-live-1`）／`LIVE_MODELS`（任意、既定 `gpt-live-1,gpt-live-1.1`）：音声モデルの既定値と、画面の「音声モデル」で選べる候補。通話ごとに切り替えて比較できる（D21）
+   - `LIVE_ACK_DELAY_MS`（任意、既定8000）：GPT-Liveが委任のたびに自動で言う相づち「はい」までの待ち時間（ミリ秒）。応答が先に届けば言わない。0で従来どおりすぐ言う（D22）
    - `LIVE_PROACTIVE_AFTER_MS`（任意、既定1500）：B/Cで、次の質問が決まったのにGPT-Liveから委任が来ないとき、自分から質問するまでの時間（ミリ秒）。0で無効（D20）
 4. **Apply** → ビルド完了後に表示される `https://sts-phase1-mock-xxxx.onrender.com` を別PCのブラウザで開く
 5. パスワードでログイン → 「音声で開始」→ マイクを許可

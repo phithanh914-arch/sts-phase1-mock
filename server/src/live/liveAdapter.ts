@@ -30,8 +30,15 @@ export interface LiveConfig {
   delegationWaitMs: number;
   /** 委任の結果がこの時間内に出なければ「確認いたします」と言う（0で無効） */
   fillerAfterMs: number;
+  /** D22：委任時の自動の相づち（「はい」）までの待ち時間（ms）。未指定ならAPIの既定（0：すぐ言う） */
+  ackDelayMs?: number;
   /** D20：B/Cで次の質問が決まったのに委任が来ないとき、この時間で自分から質問する（0で無効） */
   proactiveAfterMs?: number;
+}
+
+/** 委任の設定（D22）。ackDelayMs が0以上なら自動の相づちまでの待ち時間を指定する */
+export function liveDelegation(ackDelayMs?: number): { type: 'client'; acknowledgement_delay_ms?: number } {
+  return typeof ackDelayMs === 'number' && Number.isFinite(ackDelayMs) && ackDelayMs >= 0 ? { type: 'client', acknowledgement_delay_ms: Math.round(ackDelayMs) } : { type: 'client' };
 }
 
 /** 画面から要求された音声モデルを許可リストで検証する。リスト外・未指定なら既定に戻す（D21） */
@@ -109,7 +116,7 @@ export class LiveAdapter {
         model,
         instructions: buildLiveInstructions(speed, tone),
         audio: { output: { voice } },
-        delegation: { type: 'client' },
+        delegation: liveDelegation(this.cfg.ackDelayMs),
         store: false,
         client: {
           data_channel: {
@@ -127,7 +134,7 @@ export class LiveAdapter {
     this.dayCount += 1;
     const liveSessionId = res.session.id;
     conv.live.sessionId = liveSessionId;
-    conv.log('live_session_created', { liveSessionId, model, voice, speed, tone, store: false });
+    conv.log('live_session_created', { liveSessionId, model, voice, speed, tone, ackDelayMs: this.cfg.ackDelayMs ?? null, store: false });
     const rt: LiveRuntime = { sideband: null, inBuf: { text: '' }, outBuf: { text: '' }, outstandingDelegations: [], readbackEventIds: new Map(), pendingReadback: null, seq: 0, closed: false, exactSpeaking: false, exactQueue: [], fillerSpeaking: false, answerEventId: null, outEndAtSend: -1, lastOutEndMs: -1, ...LiveAdapter.d20Init() };
     this.runtimes.set(conv.id, rt);
     this.attach(conv, rt, liveSessionId);
